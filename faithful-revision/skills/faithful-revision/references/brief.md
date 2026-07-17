@@ -92,6 +92,13 @@ thinking is done.
 - **STOP** — no summary of the summary, no warm-down, no cheery closing. Say the
   thing; stop.
 
+**Final sweep.** After assembling the artifact and before presenting the ledger,
+run ONE declutter pass over it using the operations.md catalog (Tier 1–2) — a
+single sweep, not the POLISH round loop, and under the BRIEF gate, not the POLISH
+gate: anchor on the BRIEF artifact itself for clutter, consulting the true
+original only for facts and attributions. This catches clutter introduced while
+composing; it must not restore cut content or relitigate the ledger.
+
 ## 3 · The BRIEF gate (adversarial, every pass)
 
 Against the true original, check:
