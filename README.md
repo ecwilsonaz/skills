@@ -23,7 +23,7 @@ Then install whichever plugins you want:
 |---|---|
 | [`panel`](./panel/) | Advisor panel — pressure-test a strategic, judgment, or factual question from several independent AI perspectives, with a convergence/divergence map. |
 | [`code-review-panel`](./code-review-panel/) | Parallel code review from a panel of AI reviewers (Claude models + Codex + Antigravity, optionally OpenRouter models), with adversarial verification and interactive triage. |
-| [`faithful-revision`](./faithful-revision/) | Two-phase prose revision — structural ARCHITECT pass, then line-polish rounds to convergence — with integrity gates that keep facts, quotations, attributions, and voice unchanged. |
+| [`faithful-revision`](./faithful-revision/) | Prose revision under a chosen contract: POLISH (lossless — structural ARCHITECT pass, then line-polish rounds, with integrity gates keeping facts, quotations, attributions, and voice unchanged) or BRIEF (lossy executive compression — BLUF structure, hard caps, and a cut ledger for vetoing any omission). Ruleset distilled from 10+ writing craft books. |
 
 Each plugin's own README covers usage, invocation, and any cost caveats.
 

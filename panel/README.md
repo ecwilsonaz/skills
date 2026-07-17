@@ -8,7 +8,8 @@ split (the real cruxes worth your attention), and what no lens covered. You stay
 loop at every decision gate — roster approval, which cruxes to dig into, whether to run
 another round.
 
-For code review, see its sibling skill `code-review-panel` (not included here).
+For code review, see its sibling plugin [`code-review-panel`](../code-review-panel/)
+in this same marketplace.
 
 ## Install
 
