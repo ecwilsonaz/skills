@@ -8,7 +8,7 @@ packaged as plugins and served from this repo's own marketplace.
 Add the marketplace once:
 
 ```
-/plugin marketplace add <your-github-user>/skills
+/plugin marketplace add ecwilsonaz/skills
 ```
 
 Then install whichever plugins you want:

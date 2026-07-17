@@ -17,7 +17,7 @@ Requires a recent version of [Claude Code](https://docs.anthropic.com/en/docs/cl
 This plugin is distributed via the `eric-skills` marketplace at the root of this repo:
 
 ```
-/plugin marketplace add <your-github-user>/skills
+/plugin marketplace add ecwilsonaz/skills
 /plugin install panel@eric-skills
 ```
 
