@@ -1,6 +1,6 @@
 ---
 name: faithful-revision
-description: Use when the user wants prose tightened, simplified, decluttered, OR restructured/reorganized/resequenced for clarity and impact while meaning, facts, quotations, and attributions stay unchanged — line editing and structural revision "the Zinsser way" / per On Writing Well and allied craft (Williams, Minto, Pinker, Clark, McPhee). Triggers include "tighten this", "simplify this prose", "cut the clutter", "make this clearer", "this paragraph feels weak", "reorganize/restructure this", "improve the flow", "fix the sequence", "edit this like Zinsser", or pasting a paragraph or a short section and asking for a stronger version. Especially for reported/journalistic prose where attributions are sacred. Works on one paragraph or a short section.
+description: Use when the user wants prose tightened, simplified, decluttered, OR restructured/reorganized/resequenced for clarity and impact while meaning, facts, quotations, and attributions stay unchanged — line editing and structural revision "the Zinsser way" / per On Writing Well and allied craft (Williams, Minto, Pinker, Clark, McPhee). Triggers include "tighten this", "simplify this prose", "cut the clutter", "make this clearer", "this paragraph feels weak", "reorganize/restructure this", "improve the flow", "fix the sequence", "edit this like Zinsser", or pasting a paragraph or a short section and asking for a stronger version. Especially for reported/journalistic prose where attributions are sacred. Works on one paragraph or a short section. ALSO use for lossy executive compression — "brief this", "make this an exec summary", "boil this down for an executive", "BLUF this", "compress this for the CEO", "turn this into a Smart Brevity update" — handled by the skill's BRIEF mode.
 ---
 
 # Faithful Revision — Structural + Line Editing
@@ -41,6 +41,9 @@ Load from `references/`:
 - **examples.md** — worked BEFORE→AFTER line revisions
 - **voice-guard.md** — what the integrity gate protects as voice (both phases)
 - **consistency.md** — within-paragraph tense/person/mood check
+- **brief.md** — the BRIEF mode: deliberately lossy executive compression (BLUF
+  spine, compression operations, its own gate, the CUT LEDGER). Read this INSTEAD
+  of running the two phases when the user asks for exec-summary compression.
 
 ## The dual-gate integrity model
 
@@ -122,11 +125,13 @@ run failed exactly here — it auto-picked its own recommendation and polished o
 
 For each paragraph, run the round loop to convergence. Anchor on that paragraph; each round:
 **1. Diagnose** against operations.md (Tier 1 first) + clutter-list.md; tag each candidate
-`{span → change · principle · chapter}`. **2. Apply.** **3. Adversarial gate** — revert any
+`{span → change · principle · chapter}` — the *principle* is the canonical OP-NAME from
+operations.md (e.g. `DEAD-VERB-TO-STRONG-VERB`), not a prose paraphrase. **2. Apply.** **3. Adversarial gate** — revert any
 edit that drifts on fact/nuance/voice (check voice-guard.md, consistency.md) against the
 true original. **4. Measure** (% words cut, structural change, edits). **5. Report** the
-round. **6. Converge** when the round's accepted changes are trivial (<~3% cut, no
-structural change, only minor swaps) OR at 6 rounds. Never manufacture edits to look busy.
+round. **6. Converge** when the round's accepted changes are trivial (<~3% of the
+round's *input* cut; no structural change, meaning sentence count and order unchanged;
+only minor swaps) OR at 6 rounds. Never manufacture edits to look busy.
 
 ## Output format
 
@@ -160,7 +165,7 @@ At a fork, **STOP here** (see CHECKPOINT) and wait for the user's pick before Ph
 Phase 2 (per paragraph) uses the round format:
 ```
 ROUND 2 ──────────────────────────  −9% words · 4 edits · 1 reverted
-  ✓ "made the decision to continue" → "will continue"   (Strong verb · ch10)
+  ✓ "made the decision to continue" → "will continue"   (DEAD-VERB-TO-STRONG-VERB · ch10)
   ✗ GATE reverted: <edit> — <why it drifted>   (Integrity: nuance)
   [full revised paragraph]
 ```
@@ -174,8 +179,34 @@ professional prose.) End with a CONVERGED block per paragraph and a final assemb
 
 - **Default:** ARCHITECT (section) → POLISH (each paragraph).
 - **"declutter only" / "skip architect":** run only Phase 2 (line-tightening), when the
-  user just wants cleanup of structure they're happy with.
+  user just wants cleanup of structure they're happy with. Still run the Anchor step
+  first — quote the original verbatim; it is the fidelity reference the gate checks
+  against, with or without Phase 1.
 - **"architect only":** Phase 1 structural proposal without the line polish.
+- **"brief" / "exec summary" / "boil it down" / "BLUF this":** run **BRIEF mode**
+  (references/brief.md) INSTEAD of the two phases — deliberately lossy compression
+  for executive communication. The contract changes: omission becomes legal but
+  every substantive cut is logged in a CUT LEDGER for the author's veto, retained
+  facts and attributions stay sacred, and tone may outrank grammatical
+  completeness (never clarity). Stop at the ledger for author review, exactly as
+  Phase 1 stops at a fork. Do not mix modes in one pass: BRIEF is not "POLISH but
+  harder" — if the user wants faithful tightening, that is POLISH; if they want
+  the short version, that is BRIEF.
+
+**Mode selection — BRIEF never auto-runs.** Lossy cutting requires opt-in: an
+explicit trigger, or the user accepting one of two built-in offers:
+
+- **At Anchor:** if the request was generic ("tighten this") but the artifact is
+  visibly workplace-directed — a To-line, a status-update or memo header, an
+  embedded ask or deadline — ask ONE line before proceeding: *"Faithful
+  tightening (POLISH — nothing lost), or the short version (BRIEF — lossy, with
+  a cut ledger)?"* Reported/journalistic prose (attributions, quotations doing
+  the work) never gets this prompt.
+- **After POLISH converges:** if the result still exceeds its evident frame (an
+  email over ~250 words, an update over one screen), offer one line: *"Faithful
+  and tight at N words. Want a BRIEF pass too? (lossy; every cut logged.)"*
+- "Make it shorter," alone, is ambiguous — route it to the Anchor question;
+  don't guess the contract.
 - If the section's structure is genuinely already optimal, say so — but always *generate and
   show* the bolder arrangement so the user can compare; recommend by judgment (the safer
   option is a legitimate recommendation), never by hiding the bold one. Don't mistake

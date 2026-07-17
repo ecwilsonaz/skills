@@ -122,6 +122,12 @@ attributor and the quotation marks.
 *Rule: "X says / according to X" is its own coherence relation. A reshuffle that drops the
 attributor changed the meaning, not just the order.*
 
+*Corollary — the attribution must keep a grammatical home. An edit ADJACENT to an
+attribution can orphan it: recasting "made the decision to conduct a review of the budget,
+which she says is…" as "decided to review the budget" destroys the noun the "which" clause
+attaches to, silently forcing a rewrite of the sacred attribution. Shape the neighboring
+edit so the antecedent survives ("decided on a budget review, which she says is…").*
+
 ### J2. Manufactured implication (REVERT)
 
 The architect's signature failure — seating two true facts side by side so their adjacency
