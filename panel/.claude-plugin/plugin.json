@@ -1,0 +1,9 @@
+{
+  "name": "panel",
+  "description": "Pressure-test strategic, judgment, or factual questions with a panel of independent AI advisor personas — parallel fan-out, convergence/divergence mapping, and optional adversarial cross-examination.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Eric"
+  },
+  "keywords": ["advisory-panel", "decision-making", "perspectives", "strategy"]
+}

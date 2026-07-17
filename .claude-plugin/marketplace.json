@@ -1,0 +1,11 @@
+{
+  "name": "eric-skills",
+  "owner": { "name": "Eric" },
+  "plugins": [
+    {
+      "name": "panel",
+      "source": "./panel",
+      "description": "Advisor panel: pressure-test strategic or factual questions from several independent AI perspectives."
+    }
+  ]
+}
