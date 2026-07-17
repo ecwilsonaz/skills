@@ -11,6 +11,11 @@
       "name": "code-review-panel",
       "source": "./code-review-panel",
       "description": "Parallel multi-model code review panel with adversarial verification and interactive triage."
+    },
+    {
+      "name": "faithful-revision",
+      "source": "./faithful-revision",
+      "description": "Two-phase prose revision (structure, then line polish) with integrity gates that keep facts, attributions, and voice unchanged."
     }
   ]
 }

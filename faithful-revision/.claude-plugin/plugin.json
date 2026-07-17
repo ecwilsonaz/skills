@@ -1,0 +1,9 @@
+{
+  "name": "faithful-revision",
+  "description": "Two-phase prose revision — structural ARCHITECT pass, then Zinsser-style POLISH rounds to convergence — with a dual integrity gate that keeps facts, quotations, attributions, and voice unchanged. Built for reported/journalistic prose.",
+  "version": "1.0.0",
+  "author": {
+    "name": "ecwilsonaz"
+  },
+  "keywords": ["editing", "prose", "line-editing", "structural-editing", "journalism", "zinsser"]
+}
