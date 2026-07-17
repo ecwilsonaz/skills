@@ -22,6 +22,7 @@ Then install whichever plugins you want:
 | Plugin | What it does |
 |---|---|
 | [`panel`](./panel/) | Advisor panel — pressure-test a strategic, judgment, or factual question from several independent AI perspectives, with a convergence/divergence map. |
+| [`code-review-panel`](./code-review-panel/) | Parallel code review from a panel of AI reviewers (Claude models + Codex + Antigravity, optionally OpenRouter models), with adversarial verification and interactive triage. |
 
 Each plugin's own README covers usage, invocation, and any cost caveats.
 

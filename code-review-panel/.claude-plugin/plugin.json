@@ -1,0 +1,9 @@
+{
+  "name": "code-review-panel",
+  "description": "Run parallel code reviews from a panel of AI reviewers (Claude models, Antigravity, Codex, optional OpenRouter models), then consolidate, adversarially verify, and triage findings interactively.",
+  "version": "1.0.0",
+  "author": {
+    "name": "ecwilsonaz"
+  },
+  "keywords": ["code-review", "multi-model", "adversarial-verification", "workflow"]
+}

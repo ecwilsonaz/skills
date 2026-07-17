@@ -6,6 +6,11 @@
       "name": "panel",
       "source": "./panel",
       "description": "Advisor panel: pressure-test strategic or factual questions from several independent AI perspectives."
+    },
+    {
+      "name": "code-review-panel",
+      "source": "./code-review-panel",
+      "description": "Parallel multi-model code review panel with adversarial verification and interactive triage."
     }
   ]
 }
