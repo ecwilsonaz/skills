@@ -183,6 +183,11 @@ professional prose.) End with a CONVERGED block per paragraph and a final assemb
   first — quote the original verbatim; it is the fidelity reference the gate checks
   against, with or without Phase 1.
 - **"architect only":** Phase 1 structural proposal without the line polish.
+- In any mode that runs ARCHITECT: if the section's structure is genuinely already
+  optimal, say so — but always *generate and show* the bolder arrangement so the user
+  can compare; recommend by judgment (the safer option is a legitimate recommendation),
+  never by hiding the bold one. Don't mistake "serviceable" for "optimal," and don't
+  manufacture a restructure that improves nothing.
 - **"brief" / "exec summary" / "boil it down" / "BLUF this":** run **BRIEF mode**
   (references/brief.md) INSTEAD of the two phases — deliberately lossy compression
   for executive communication. The contract changes: omission becomes legal but
@@ -207,10 +212,6 @@ explicit trigger, or the user accepting one of two built-in offers:
   and tight at N words. Want a BRIEF pass too? (lossy; every cut logged.)"*
 - "Make it shorter," alone, is ambiguous — route it to the Anchor question;
   don't guess the contract.
-- If the section's structure is genuinely already optimal, say so — but always *generate and
-  show* the bolder arrangement so the user can compare; recommend by judgment (the safer
-  option is a legitimate recommendation), never by hiding the bold one. Don't mistake
-  "serviceable" for "optimal," and don't manufacture a restructure that improves nothing.
 
 ## Common mistakes
 

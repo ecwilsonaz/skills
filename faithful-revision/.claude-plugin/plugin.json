@@ -1,6 +1,6 @@
 {
   "name": "faithful-revision",
-  "description": "Two-phase prose revision — structural ARCHITECT pass, then Zinsser-style POLISH rounds to convergence — with a dual integrity gate that keeps facts, quotations, attributions, and voice unchanged. Built for reported/journalistic prose.",
+  "description": "Prose revision under a chosen contract: lossless POLISH (structural ARCHITECT pass, then Zinsser-style rounds to convergence, with integrity gates keeping facts, quotations, attributions, and voice unchanged — built for reported/journalistic prose) or opt-in BRIEF (lossy executive compression: BLUF structure, hard caps, and a cut ledger for vetoing any omission).",
   "version": "1.0.0",
   "author": {
     "name": "ecwilsonaz"

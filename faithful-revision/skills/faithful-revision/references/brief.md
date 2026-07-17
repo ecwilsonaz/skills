@@ -62,7 +62,9 @@ after is optional service.
 
 **Pre-answer** the two or three objections the reader will fire back — one line
 each, at the end or in the appendix. It saves a round-trip and proves the
-thinking is done.
+thinking is done. Source-grounding: pre-answer only objections the source
+already answers; an objection the source leaves open gets flagged as an open
+question, never an invented answer.
 
 ## 2 · Compression operations (applied in order)
 
@@ -71,8 +73,10 @@ thinking is done.
 - **DELTA-ONLY** — cut everything the reader already knows: background, history,
   credentials, methodology, the path by which you figured it out.
 - **BAD-NEWS-FIRST** — the problem goes in the tease/lede, who's responsible and
-  actions taken next, reassurance (with a real number) at the end, where it's
-  earned. Burying it reads as spin and the reader finds it anyway.
+  actions taken next, reassurance at the end, where it's earned — with a real
+  number when the source supplies one; if it doesn't, reassure in words or flag
+  the missing metric, never manufacture a figure. Burying bad news reads as spin
+  and the reader finds it anyway.
 - **HALVE-TWICE** — cut the draft to half its length; then do it again. Done
   compressing? You're halfway.
 - **HEDGE-DELETE** — hedging auxiliaries and weasel qualifiers go. Make the
@@ -80,8 +84,11 @@ thinking is done.
   claim — drop it or state the uncertainty as fact ("unconfirmed; verifying by
   Friday").
 - **NUMBER-FOR-ADJECTIVE** — replace evaluative adjectives with a figure plus
-  context (comparison or base), ≤3 significant digits. A metric beats an
-  adjective; a recommendation beats a description; a deadline beats a hope.
+  context (comparison or base), ≤3 significant digits — ONLY when the source
+  contains the figure. No number in the source? Keep the adjective or log the
+  gap in the CUT LEDGER as a question for the author; a fabricated metric is
+  worse than a vague one. A source-backed metric beats an adjective; a
+  recommendation beats a description; a deadline beats a hope.
 - **POSITIVE-FORM** — state what is, not what is not: "did not pass" → "failed."
   Denial only for real antithesis.
 - **TELEGRAPH** — where register allows, compress to fragments: "Revenue: down
