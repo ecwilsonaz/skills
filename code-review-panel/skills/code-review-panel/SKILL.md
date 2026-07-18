@@ -66,7 +66,10 @@ failure surface for no benefit (observed 2026-07-12: `openai/gpt-5.6-sol` via Op
 died on an upstream quota 502 while the codex CLI path was available the whole time).
 Version gate: gpt-5.6-sol rejects older CLIs — v0.133 returns 400 "requires a newer
 version of Codex"; upgrade via `npm install -g @openai/codex@latest` (it is an npm
-global on this machine, not brew) before launching the panel, not mid-run.
+global on this machine, not brew) before launching the panel, not mid-run. (As of
+2026-07-18 this machine runs codex-cli v0.144.1; a direct `codex review` used model
+gpt-5.5 and prints its findings under a "Review comment:" header — see the marker note
+in CODEX_WRAPPER.)
 
 ## Phase 0: Determine Review Scope (main conversation, do this ONCE)
 
@@ -139,6 +142,14 @@ Before/while it runs:
 - If the result's `reviewerStatus` shows a failed reviewer, report it honestly above the
   summary table; the wrappers already retried once internally — do not relaunch the panel
   for one failure. Consensus denominators use `panelSize` (succeeded reviewers).
+  - **Codex-specific recovery:** codex is the reviewer most likely to fail this way —
+    its runtime can exceed the workflow's structured-output enforcement window even when
+    the wrapper waits correctly (observed 2026-07-18). To get codex's read without
+    re-running the whole panel, run it DIRECTLY from the main conversation, outside the
+    workflow: `codex review <codexFlag>` in the background (redirect to a log), monitor
+    the log for its trailing findings block, then read the tail. Outside the workflow
+    there is no structured-output enforcement window, so it runs to completion (this
+    reliably recovered a force-terminated codex on 2026-07-18).
 - To re-run after a partial failure, relaunch with `resumeFromRunId` — completed
   reviewers return from cache instantly.
 
@@ -232,8 +243,12 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 // - codex review needs exactly one scope flag, rejects a prompt argument alongside
 //   it, and has no --approval-mode. It can legitimately run 30+ minutes on big
 //   diffs — run it in background and wait for the completion notification; never
-//   read its full transcript (it is huge), only the tail after the final
-//   "Full review comments:".
+//   read its full transcript (it is huge), only the tail findings block it prints
+//   at the very end. The header STRING has changed across CLI versions — older
+//   CLIs printed "Full review comments:", v0.144.1 (observed 2026-07-18) prints
+//   "Review comment:" — so match the trailing findings block generically; do not
+//   grep for one fixed marker (a stale grep silently never fires and a watch
+//   falls through to process-exit).
 // - The wrapper must NEVER wait for codex by ending its turn or via a foreground
 //   sleep/kill-0 loop: the harness converts such loops into ANOTHER background
 //   task, the turn ends with nothing to report, the workflow fails the reviewer
@@ -251,8 +266,8 @@ Translate agy's prose findings into the structured schema faithfully — do not 
 const CODEX_WRAPPER = `You are a wrapper around the Codex CLI, producing an external code-review perspective.
 Steps:
 1. Run in BACKGROUND, redirecting output to a log file (it may take 30+ minutes): codex review ${args.codexFlag}
-2. WAIT CORRECTLY — this is the part that has failed before. Load the Monitor tool (ToolSearch "select:Monitor") and monitor the background task / log file until codex exits or the log contains its final "Full review comments:" section; renew the monitor for up to ~25 minutes total. NEVER end your turn to "wait for the completion notification" and NEVER wait with a foreground sleep/kill-0 Bash loop — the harness converts those to background tasks, your turn ends without structured output, the workflow fails you after one nudge, and your death orphan-kills codex mid-review. If Monitor is unavailable after loading, fall back to repeated SHORT foreground Bash checks (tail the log, test liveness) — many quick calls, never one long wait.
-3. When it completes, read only the END of its output — the findings section after the final "Full review comments:". The transcript above it is its working log; tail the file, never read it whole.
+2. WAIT CORRECTLY — this is the part that has failed before. Load the Monitor tool (ToolSearch "select:Monitor") and monitor the background task / log file until codex exits or the log emits its trailing findings block (a "Review comment:"/"Full review comments:" section — the exact header varies by CLI version, so watch for the findings block itself, not a fixed string); renew the monitor for up to ~25 minutes total. NEVER end your turn to "wait for the completion notification" and NEVER wait with a foreground sleep/kill-0 Bash loop — the harness converts those to background tasks, your turn ends without structured output, the workflow fails you after one nudge, and your death orphan-kills codex mid-review. If Monitor is unavailable after loading, fall back to repeated SHORT foreground Bash checks (tail the log, test liveness) — many quick calls, never one long wait. NOTE: codex is the most timeout-prone reviewer — its runtime can exceed the workflow's structured-output enforcement window (observed 2026-07-18: force-terminated mid-review while waiting correctly). If that happens, returning findings: [] with a failed: reason is correct; the main conversation recovers it (see Phase 1).
+3. When it completes, read only the END of its output — the trailing findings block (after the final "Review comment:" or "Full review comments:" header, whichever this CLI prints). The transcript above it is its working log; tail the file, never read it whole.
 4. Translate its findings into the structured schema faithfully (map P1→HIGH, P2→MEDIUM, P3→LOW unless it states severities directly); do not add findings of your own. For the scope and why_it_matters fields codex does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${args.intent}.
 5. If codex errors out, retry ONCE; if that fails, return findings: [] and failed: "<what happened>". ${READ_ONLY}`
 
@@ -447,7 +462,8 @@ Launch the three Claude reviewers as parallel Agent calls and the CLI reviewers 
 codex, and any selected OpenRouter models via opencode) as background Bash calls, using
 the same prompts and constraints embedded in the script above (diff-file + `--add-dir`
 for agy with a hard `timeout` and one retry; background + scope-flag-only for codex,
-reading only the tail after "Full review comments:"; in-repo diff file + `--agent plan`
+reading only its trailing findings block (header varies by CLI version — "Review comment:"
+on v0.144.1, "Full review comments:" on older); in-repo diff file + `--agent plan`
 for opencode). Then
 consolidate, count consensus, and rank manually before triage — applying the same anchor
 rule, scope classification, prior-disposition labeling, and pre-existing shelf described
