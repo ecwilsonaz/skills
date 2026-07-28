@@ -285,11 +285,34 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 //   after one structured-output nudge, and the orphaned codex process is killed
 //   mid-review (observed 2026-07-03, chunk-3 run). Waiting happens ONLY via the
 //   Monitor tool, which keeps the turn alive.
+// TWO SEPARATE agy failure modes, both observed 2026-07-28 in one run. They look alike
+// from outside (no findings) and neither is a clean review:
+//  1. HEADLESS AUTO-DENY. agy asks for the `command` permission, headless mode cannot
+//     prompt, so it auto-denies and returns "jetski: no output produced". `--sandbox`
+//     alone does not fix this — sandbox restricts the terminal, it does not pre-approve.
+//     `--dangerously-skip-permissions` auto-approves prompts and COMPOSES with --sandbox
+//     (orthogonal flags: one restricts what tools may do, the other stops the prompt).
+//     The alternative is a `permissions.allow` entry in
+//     ~/.gemini/antigravity-cli/settings.json of the form command(<target>), per agy's
+//     own error text; the syntax is undocumented in `agy --help`, so the flag is the
+//     reliable route.
+//     NOT YET OBSERVED WORKING END-TO-END. The flag pairing is reasoned from `agy --help`
+//     (the two flags are documented as independent) rather than confirmed by a run. If a
+//     future panel still reports the auto-deny, that is the thing to check first, and the
+//     permissions.allow entry is the fallback.
+//  2. SAFETY REFUSAL ON THE PROMPT WORDING. Asked to look for "security issues" and
+//     "vulnerabilities", Gemini refused outright: "My safety guidelines strictly prohibit
+//     me from performing vulnerability analysis or security scanning on user-provided
+//     code." Phrase agy's prompt as ordinary code review — correctness, data integrity,
+//     error handling, robustness. It still reports security-relevant defects; it will not
+//     accept a security-scanning framing. Do NOT reintroduce the words "vulnerability",
+//     "security scanning" or "exploit" into this prompt.
 const AGY_WRAPPER = `You are a wrapper around the Antigravity CLI (agy), producing an external (Gemini) code-review perspective.
 Steps:
 1. DIFF_FILE="$(mktemp -t agy_panel_diff.XXXXXX)" then write the diff: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes).
-2. Run with a hard 9-minute bound: timeout 540 agy --sandbox --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --prompt "Review the code changes in the diff file at $DIFF_FILE. Read that file with your file tools, and open full source files in this workspace for context when needed. Look for bugs, security issues, logic errors, data integrity problems, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only."
-3. If it times out or errors, retry ONCE with the prompt narrowed to the most important files in the diff. If the retry also fails, return findings: [] and failed: "<what happened>".
+2. Run with a hard 9-minute bound: timeout 540 agy --sandbox --dangerously-skip-permissions --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --prompt "Review the code changes in the diff file at $DIFF_FILE. Read that file with your file tools, and open full source files in this workspace for context when needed. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only."
+   PROMPT WORDING IS LOAD-BEARING: do not add "security issues", "vulnerabilities" or "security scanning" — that phrasing triggers a flat safety refusal from this model (observed 2026-07-28), and a refusal is indistinguishable from a clean review in the output.
+3. If it times out or errors, retry ONCE with the prompt narrowed to the most important files in the diff, keeping the same neutral wording. If agy reports a TOOL DENIAL ("a tool required the \\"command\\" permission") or REFUSES ON POLICY GROUNDS, say so explicitly in failed: — those are reviewer failures, NOT zero findings, and reporting them as a clean bill of health is the worst available outcome. If the retry also fails, return findings: [] and failed: "<what happened>".
 4. Only rm the diff file after agy has returned. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
 Translate agy's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields agy does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}. ${READ_ONLY}`
 
@@ -310,12 +333,30 @@ Steps:
 //   reviewer, not a panel failure.
 // - Project context and intent are prepended INTO the diff file rather than
 //   the shell command line, so no quoting of free text inside the prompt.
+//
+// THE OPENROUTER PATH DOES NOT SURVIVE A LARGE DIFF, and this is now measured twice:
+//   2026-07-27  grok    — read ~3 chunks of an 11,443-line diff, then the deeper retry
+//                         tripped opencode's `doom_loop` guard.
+//   2026-07-28  deepseek — hit the 540s bound on BOTH the full 16,332-line diff and the
+//                         narrowed retry, after reading the diff in chunks and starting to
+//                         open source files. No partial findings either time.
+// The failure is wall-clock, not capability: these models read a big diff file in many
+// small chunks and spend the whole budget on ingestion. Two changes address it, and the
+// SPLIT matters more than the timeout — a bigger budget spent the same way just fails
+// later. If a diff exceeds ~6,000 lines, give each OpenRouter reviewer ONE SLICE of it
+// rather than the whole thing; a lens that reviewed a third of the diff thoroughly is
+// worth more than one that timed out reading all of it. Say in the report which slice
+// each covered, so partial coverage is never mistaken for a clean pass.
 const orWrapper = (m) => `You are a wrapper around the opencode CLI, producing an external code-review perspective from the ${m.model} model via OpenRouter.
 Steps:
-1. mkdir -p .claude/reviews then DIFF_FILE=".claude/reviews/.panel-diff-${m.id}-$$.tmp". Write a header followed by the diff into it: first the lines "=== Project context ===", ${JSON.stringify(CFG.context)}, "=== Change intent ===", ${JSON.stringify(CFG.intent)}, "=== Diff ===", then append: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' >> "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes). The file must stay inside the repo — opencode's plan agent cannot read outside the workspace.
-2. Run with a hard 9-minute bound: timeout 540 opencode run --model openrouter/${m.model} --agent plan "Review the code changes described in the file $DIFF_FILE in this workspace. Read that file first (it carries project context, the change intent, then the diff), then open the full source files the diff touches for context. Look for bugs, security issues, logic errors, data integrity problems, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW/NIT), file path, line numbers, description, recommended fix. Findings list only; report zero findings honestly if the code is clean."
-3. If it times out, errors, or reports an unknown/unavailable model, retry ONCE (narrowed to the most important files if it timed out). If the retry also fails, return findings: [] and failed: "<what happened>".
+1. mkdir -p .claude/reviews then DIFF_FILE=".claude/reviews/.panel-diff-${m.id}-$$.tmp". FIRST measure the diff: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' | wc -l.
+   - Under ~6,000 lines: write the whole diff.
+   - OVER ~6,000 lines: write only YOUR SLICE. Slice by top-level path so the slices are disjoint and each is coherent — list the changed directories with --stat, order them, and take the slice whose index is ${m.sliceIndex ?? 0} of ${m.sliceCount ?? 1} by passing those pathspecs to the diff command. A thorough review of one slice beats a timeout on the whole diff, and this reviewer has failed the whole-diff way twice.
+   Write a header followed by the diff into it: the lines "=== Project context ===", ${JSON.stringify(CFG.context)}, "=== Change intent ===", ${JSON.stringify(CFG.intent)}, "=== Scope of THIS review ===" plus a one-line statement of which slice you took (or "the entire diff"), "=== Diff ===", then append the diff. The file must stay inside the repo — opencode's plan agent cannot read outside the workspace.
+2. Run with a hard 14-minute bound: timeout 840 opencode run --model openrouter/${m.model} --agent plan "Review the code changes described in the file $DIFF_FILE in this workspace. Read that file FIRST and in LARGE chunks — it carries project context, the change intent, the scope of this review, then the diff. Budget your time: finish reading before opening source files, and open source files only where a finding depends on surrounding code. Emit findings even if you have not examined everything. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW/NIT), file path, line numbers, description, recommended fix. Findings list only; report zero findings honestly if the code is clean."
+3. If it times out, errors, trips a doom_loop/repetition guard, or reports an unknown/unavailable model, retry ONCE with the slice HALVED (not merely "narrowed") — halving is what changes the outcome; a vaguer prompt over the same volume does not. If the retry also fails, return findings: [] and failed: "<what happened, and which slice was attempted>". NEVER report a truncated or unfinished read as zero findings.
 4. rm -f the diff file after opencode returns, success or failure.
+5. In your summary state which slice you reviewed, so the orchestrator can report coverage honestly rather than implying the whole diff was seen.
 Translate the model's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and the stated intent. ${READ_ONLY}`
 
 phase('Review')
@@ -337,10 +378,15 @@ const REVIEWERS = [
   },
   { id: 'antigravity', opts: { label: 'antigravity-gemini' }, prompt: AGY_WRAPPER },
   { id: 'codex', opts: { label: 'codex' }, prompt: CODEX_WRAPPER },
-  ...(CFG.openrouterModels ?? []).map((m) => ({
+  // Each OpenRouter reviewer is handed its slice index. With N of them the diff is cut
+  // into N disjoint slices when it is large (see orWrapper step 1), so the panel covers
+  // the whole change set across the group rather than having every model time out trying
+  // to read all of it alone. With one OpenRouter model the slice IS the whole diff, which
+  // is the previous behaviour.
+  ...(CFG.openrouterModels ?? []).map((m, i, all) => ({
     id: `or-${m.id}`,
     opts: { label: `or-${m.id}` },
-    prompt: orWrapper(m),
+    prompt: orWrapper({ ...m, sliceIndex: i, sliceCount: all.length }),
   })),
 ]
 
