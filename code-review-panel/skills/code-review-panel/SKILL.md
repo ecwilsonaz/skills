@@ -131,13 +131,24 @@ string):
 Before/while it runs:
 
 - The user invoking this skill IS the multi-agent opt-in for the Workflow tool.
-- VERIFY ARGS DELIVERY within the first minute: count `"type":"started"` lines in the
-  run's journal.jsonl (transcript dir is in the tool result) — it must equal the reviewer
-  count including OpenRouter models. Observed 2026-07-03: args arrived as a string, every
-  reviewer got literal "undefined" for scope/diff, and the OpenRouter spread was empty
-  (5 agents instead of 8). If that happens: TaskStop the run, edit the persisted script
-  to bake the values in as a `const CFG = {…}` literal (replace `args.` references with
-  `CFG.`), and relaunch via scriptPath.
+- VERIFY ARGS DELIVERY within the first minute — the script now normalizes a
+  string-delivered `args` itself and returns `{ error, panelSize: 0 }` rather than
+  running a degraded panel, but verify anyway, because the string form is not the only
+  way args can arrive wrong. Count `"type":"started"` lines in the run's journal.jsonl
+  (transcript dir is in the tool result) — it must equal the reviewer count *including*
+  OpenRouter models. Then confirm the values actually landed:
+  `grep -o 'Scope: [^.]*' agent-*.jsonl` in that directory must show your real scope
+  string, never "undefined".
+  Observed twice (2026-07-03, 2026-07-27): args arrived as a JSON string, so `args.scope`
+  was undefined; because undefined interpolates into a template literal as the *text*
+  "undefined", every reviewer got "Scope: undefined. Obtain the change set with:
+  undefined" and the OpenRouter spread was empty — 5 agents instead of 7–8, with no error
+  raised. On a started-count mismatch or an `error` return: TaskStop the run, edit the
+  persisted script to bake the values in as a `const CFG = {…}` literal (replace every
+  `args.` reference with `CFG.`), and relaunch via scriptPath. A started-count that is
+  short by exactly the number of OpenRouter models is this bug until proven otherwise —
+  the concurrency cap is `min(16, cores - 2)`, so on any machine with ≥10 cores a
+  7–8 reviewer panel should start every agent at once.
 - Tell the user they can watch live progress with `/workflows`.
 - If the result's `reviewerStatus` shows a failed reviewer, report it honestly above the
   summary table; the wrappers already retried once internally — do not relaunch the panel
@@ -162,6 +173,25 @@ export const meta = {
     { title: 'Consolidate', detail: 'merge and dedupe findings across reviewers' },
     { title: 'Verify', detail: 'skeptic pass on single-reviewer findings' },
   ],
+}
+
+// Defensive arg normalization. The harness sometimes delivers `args` as a JSON
+// STRING rather than an object (observed 2026-07-03 and again 2026-07-27). When
+// that happens `args.scope` is undefined, and because undefined interpolates
+// into a template literal as the TEXT "undefined", every reviewer silently
+// receives "Scope: undefined. Obtain the change set with: undefined" and the
+// OpenRouter spread comes out empty — a degraded panel that still reports
+// success. Parse the string form, then FAIL LOUDLY if required fields are
+// missing, so a future mangling can never run a silent no-op panel again.
+let CFG
+try {
+  CFG = typeof args === 'string' ? JSON.parse(args) : (args ?? {})
+} catch {
+  return { error: 'args arrived as an unparseable string — pass args as a real JSON object, or bake a `const CFG = {…}` literal into the script and relaunch via scriptPath.', issues: [], reviewerStatus: {}, panelSize: 0 }
+}
+const MISSING = ['scope', 'diffCommand', 'codexFlag', 'context', 'intent'].filter((k) => !CFG[k])
+if (MISSING.length) {
+  return { error: `Required args missing: ${MISSING.join(', ')} (args arrived as ${typeof args}). Bake a \`const CFG = {…}\` literal into the persisted script and relaunch via scriptPath.`, issues: [], reviewerStatus: {}, panelSize: 0 }
 }
 
 const FINDINGS_SCHEMA = {
@@ -225,9 +255,9 @@ const VERDICT_SCHEMA = {
 }
 
 const READ_ONLY = 'This is a READ-ONLY review: never use Edit or Write. Verify claims empirically where cheap (build, grep, run a snippet) rather than speculating.'
-const COMMON = `Scope: ${args.scope}. Obtain the change set with: ${args.diffCommand} — then open full source files for context.
-Project context: ${args.context}
-Change intent: ${args.intent}
+const COMMON = `Scope: ${CFG.scope}. Obtain the change set with: ${CFG.diffCommand} — then open full source files for context.
+Project context: ${CFG.context}
+Change intent: ${CFG.intent}
 ${READ_ONLY}
 Report every finding with: severity (CRITICAL/HIGH/MEDIUM/LOW/NIT), repo-relative file path, line number when known, a one-sentence summary, supporting detail, a recommended fix, a scope classification (this-change / pre-existing / preference), and why_it_matters — one sentence anchoring it to the stated intent or, for pre-existing defects, to a concrete failure scenario.
 Anchor rule: a finding must matter for this change or be a real defect with a concrete failure scenario — commentary that is merely true is not a finding. Equal-merit alternatives are not findings; the current code's approach wins ties. Do report real pre-existing defects you notice en route (scope: pre-existing) — they are shelved for the user, not dropped. Report zero findings honestly if the code is clean.`
@@ -257,18 +287,18 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 //   Monitor tool, which keeps the turn alive.
 const AGY_WRAPPER = `You are a wrapper around the Antigravity CLI (agy), producing an external (Gemini) code-review perspective.
 Steps:
-1. DIFF_FILE="$(mktemp -t agy_panel_diff.XXXXXX)" then write the diff: ${args.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes).
+1. DIFF_FILE="$(mktemp -t agy_panel_diff.XXXXXX)" then write the diff: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes).
 2. Run with a hard 9-minute bound: timeout 540 agy --sandbox --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --prompt "Review the code changes in the diff file at $DIFF_FILE. Read that file with your file tools, and open full source files in this workspace for context when needed. Look for bugs, security issues, logic errors, data integrity problems, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only."
 3. If it times out or errors, retry ONCE with the prompt narrowed to the most important files in the diff. If the retry also fails, return findings: [] and failed: "<what happened>".
 4. Only rm the diff file after agy has returned. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
-Translate agy's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields agy does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${args.intent}. ${READ_ONLY}`
+Translate agy's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields agy does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}. ${READ_ONLY}`
 
 const CODEX_WRAPPER = `You are a wrapper around the Codex CLI, producing an external code-review perspective.
 Steps:
-1. Run in BACKGROUND, redirecting output to a log file (it may take 30+ minutes): codex review ${args.codexFlag}
+1. Run in BACKGROUND, redirecting output to a log file (it may take 30+ minutes): codex review ${CFG.codexFlag}
 2. WAIT CORRECTLY — this is the part that has failed before. Load the Monitor tool (ToolSearch "select:Monitor") and monitor the background task / log file until codex exits or the log emits its trailing findings block (a "Review comment:"/"Full review comments:" section — the exact header varies by CLI version, so watch for the findings block itself, not a fixed string); renew the monitor for up to ~25 minutes total. NEVER end your turn to "wait for the completion notification" and NEVER wait with a foreground sleep/kill-0 Bash loop — the harness converts those to background tasks, your turn ends without structured output, the workflow fails you after one nudge, and your death orphan-kills codex mid-review. If Monitor is unavailable after loading, fall back to repeated SHORT foreground Bash checks (tail the log, test liveness) — many quick calls, never one long wait. NOTE: codex is the most timeout-prone reviewer — its runtime can exceed the workflow's structured-output enforcement window (observed 2026-07-18: force-terminated mid-review while waiting correctly). If that happens, returning findings: [] with a failed: reason is correct; the main conversation recovers it (see Phase 1).
 3. When it completes, read only the END of its output — the trailing findings block (after the final "Review comment:" or "Full review comments:" header, whichever this CLI prints). The transcript above it is its working log; tail the file, never read it whole.
-4. Translate its findings into the structured schema faithfully (map P1→HIGH, P2→MEDIUM, P3→LOW unless it states severities directly); do not add findings of your own. For the scope and why_it_matters fields codex does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${args.intent}.
+4. Translate its findings into the structured schema faithfully (map P1→HIGH, P2→MEDIUM, P3→LOW unless it states severities directly); do not add findings of your own. For the scope and why_it_matters fields codex does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}.
 5. If codex errors out, retry ONCE; if that fails, return findings: [] and failed: "<what happened>". ${READ_ONLY}`
 
 // OpenRouter reviewers run via `opencode run` (verified 2026-07-03):
@@ -282,7 +312,7 @@ Steps:
 //   the shell command line, so no quoting of free text inside the prompt.
 const orWrapper = (m) => `You are a wrapper around the opencode CLI, producing an external code-review perspective from the ${m.model} model via OpenRouter.
 Steps:
-1. mkdir -p .claude/reviews then DIFF_FILE=".claude/reviews/.panel-diff-${m.id}-$$.tmp". Write a header followed by the diff into it: first the lines "=== Project context ===", ${JSON.stringify(args.context)}, "=== Change intent ===", ${JSON.stringify(args.intent)}, "=== Diff ===", then append: ${args.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' >> "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes). The file must stay inside the repo — opencode's plan agent cannot read outside the workspace.
+1. mkdir -p .claude/reviews then DIFF_FILE=".claude/reviews/.panel-diff-${m.id}-$$.tmp". Write a header followed by the diff into it: first the lines "=== Project context ===", ${JSON.stringify(CFG.context)}, "=== Change intent ===", ${JSON.stringify(CFG.intent)}, "=== Diff ===", then append: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' >> "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes). The file must stay inside the repo — opencode's plan agent cannot read outside the workspace.
 2. Run with a hard 9-minute bound: timeout 540 opencode run --model openrouter/${m.model} --agent plan "Review the code changes described in the file $DIFF_FILE in this workspace. Read that file first (it carries project context, the change intent, then the diff), then open the full source files the diff touches for context. Look for bugs, security issues, logic errors, data integrity problems, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW/NIT), file path, line numbers, description, recommended fix. Findings list only; report zero findings honestly if the code is clean."
 3. If it times out, errors, or reports an unknown/unavailable model, retry ONCE (narrowed to the most important files if it timed out). If the retry also fails, return findings: [] and failed: "<what happened>".
 4. rm -f the diff file after opencode returns, success or failure.
@@ -307,7 +337,7 @@ const REVIEWERS = [
   },
   { id: 'antigravity', opts: { label: 'antigravity-gemini' }, prompt: AGY_WRAPPER },
   { id: 'codex', opts: { label: 'codex' }, prompt: CODEX_WRAPPER },
-  ...(args.openrouterModels ?? []).map((m) => ({
+  ...(CFG.openrouterModels ?? []).map((m) => ({
     id: `or-${m.id}`,
     opts: { label: `or-${m.id}` },
     prompt: orWrapper(m),
@@ -342,7 +372,7 @@ phase('Consolidate')
 const merged = await agent(
   `Below are ${all.length} code-review findings from ${panelSize} independent reviewers, as JSON. Group findings that describe the SAME underlying issue (even if worded differently or anchored a few lines apart); keep genuinely distinct issues separate. For each group report: the highest severity assigned, the clearest summary/fix, merged detail noting differing observations, the distinct reviewer ids, a resolved scope, and a short-kebab-case slug.
 Scope resolution (anchor rule): findings classified "preference" whose why_it_matters states no concrete failure scenario are DROPPED — list their summaries in a final log line of your reasoning, but not in issues[]. Never drop this-change or pre-existing findings. When reviewers disagree on scope, a concrete failure scenario wins.
-Prior dispositions from earlier panel runs on this scope (may be empty): when an issue matches an entry, REUSE its slug and set priorDisposition to its recorded fate.\n${args.priorDispositions}\n\n${JSON.stringify(all)}`,
+Prior dispositions from earlier panel runs on this scope (may be empty): when an issue matches an entry, REUSE its slug and set priorDisposition to its recorded fate.\n${CFG.priorDispositions}\n\n${JSON.stringify(all)}`,
   { label: 'merge-dedupe', phase: 'Consolidate', schema: MERGE_SCHEMA },
 )
 
@@ -355,7 +385,7 @@ const verified = await parallel(merged.issues.map((issue) => () => {
     return Promise.resolve({ ...issue, verdict: 'CONSENSUS' })
   }
   return agent(
-    `Adversarially verify this code-review finding — try to REFUTE it by reading the actual code (and running cheap checks). Default to real=false if you cannot confirm the failure scenario concretely. For scope "pre-existing" findings be extra demanding: a genuine defect needs a concrete failure scenario in the code as it stands — an alternative approach dressed up as a bug is real=false.\nFinding: ${JSON.stringify(issue)}\nScope: ${args.scope}. ${READ_ONLY}`,
+    `Adversarially verify this code-review finding — try to REFUTE it by reading the actual code (and running cheap checks). Default to real=false if you cannot confirm the failure scenario concretely. For scope "pre-existing" findings be extra demanding: a genuine defect needs a concrete failure scenario in the code as it stands — an alternative approach dressed up as a bug is real=false.\nFinding: ${JSON.stringify(issue)}\nScope: ${CFG.scope}. ${READ_ONLY}`,
     { label: `verify:${issue.file}`, phase: 'Verify', schema: VERDICT_SCHEMA },
   ).then((v) => ({ ...issue, verdict: v.real ? 'CONFIRMED' : 'REFUTED', verdictReason: v.reason }))
 }))
