@@ -161,8 +161,25 @@ Before/while it runs:
     the log for its trailing findings block, then read the tail. Outside the workflow
     there is no structured-output enforcement window, so it runs to completion (this
     reliably recovered a force-terminated codex on 2026-07-18).
+  - **Antigravity-specific recovery:** agy can fail in a way that emits NO start event at
+    all — a classifier can block the sub-agent before it launches, so the reviewer is
+    simply absent rather than failed (observed 2026-08-11; see the mode-3 note above the
+    wrapper). Recover the same way as codex: run it yourself from the main conversation,
+    in parallel with the workflow rather than after it, since agy takes minutes and the
+    other reviewers are already running. Write the diff to a file outside the repo, then
+    `timeout 540 agy --sandbox --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --prompt "…"`
+    with the same neutral wording the wrapper uses. Fold its findings into triage by hand
+    and say so in the report — a reviewer merged manually did not go through the dedup and
+    consensus phases, so its findings carry a consensus of 1 by construction.
+- **A start-event count short of the reviewer count is a real signal, not noise.** Check it
+  within the first minute (see the args verification above) — the args-string bug and a
+  classifier block both present this way, and they are distinguishable: with the args bug
+  the transcripts show "Scope: undefined", with a block the scope is correct and one agent
+  never appears at all. Neither raises an error on its own.
 - To re-run after a partial failure, relaunch with `resumeFromRunId` — completed
-  reviewers return from cache instantly.
+  reviewers return from cache instantly. This is also the fix for a crash in the
+  collection/merge phases: the reviewers are cached, so a resume costs only the phases
+  that never ran.
 
 ```js
 export const meta = {
@@ -285,22 +302,36 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 //   after one structured-output nudge, and the orphaned codex process is killed
 //   mid-review (observed 2026-07-03, chunk-3 run). Waiting happens ONLY via the
 //   Monitor tool, which keeps the turn alive.
-// TWO SEPARATE agy failure modes, both observed 2026-07-28 in one run. They look alike
-// from outside (no findings) and neither is a clean review:
-//  1. HEADLESS AUTO-DENY. agy asks for the `command` permission, headless mode cannot
-//     prompt, so it auto-denies and returns "jetski: no output produced". `--sandbox`
-//     alone does not fix this — sandbox restricts the terminal, it does not pre-approve.
-//     `--dangerously-skip-permissions` auto-approves prompts and COMPOSES with --sandbox
-//     (orthogonal flags: one restricts what tools may do, the other stops the prompt).
-//     The alternative is a `permissions.allow` entry in
-//     ~/.gemini/antigravity-cli/settings.json of the form command(<target>), per agy's
-//     own error text; the syntax is undocumented in `agy --help`, so the flag is the
-//     reliable route.
-//     NOT YET OBSERVED WORKING END-TO-END. The flag pairing is reasoned from `agy --help`
-//     (the two flags are documented as independent) rather than confirmed by a run. If a
-//     future panel still reports the auto-deny, that is the thing to check first, and the
-//     permissions.allow entry is the fallback.
-//  2. SAFETY REFUSAL ON THE PROMPT WORDING. Asked to look for "security issues" and
+// THREE SEPARATE agy failure modes. They look alike from outside (no findings) and none
+// is a clean review:
+//  1. HEADLESS AUTO-DENY (observed 2026-07-28). agy asks for the `command` permission,
+//     headless mode cannot prompt, so it auto-denies and returns "jetski: no output
+//     produced". This happens when agy wants to run a SHELL COMMAND — it is not a blanket
+//     property of headless mode, which is the misreading that put a dangerous flag in this
+//     wrapper for two weeks. THE PROMPT BELOW ONLY READS FILES, so it does not hit this:
+//     verified 2026-08-11 by running agy with `--sandbox --add-dir` and NO permissions
+//     flag, which returned a normal answer at exit 0. Keep the prompt to file tools and
+//     the mode stays out of reach. If a future prompt does need shell, the route is a
+//     `permissions.allow` entry of the form command(<target>) in
+//     ~/.gemini/antigravity-cli/settings.json — syntax undocumented in `agy --help` and
+//     still unverified — NOT the flag, for the reason in mode 3.
+//  3. BLOCKED BY A SAFETY CLASSIFIER BEFORE THE AGENT EVER STARTS (observed 2026-08-11).
+//     `--dangerously-skip-permissions` used to be in this wrapper. Putting it in a
+//     SUB-AGENT prompt trips the classifier: "[Create Unsafe Agents] The sub-agent prompt
+//     launches the agy CLI with --dangerously-skip-permissions, disabling its per-action
+//     approval gate for a code-execution-capable agent, with no explicit user
+//     authorization naming that flag." The agent never starts, `agent()` returns null, and
+//     NO start event is emitted — from outside it looks like a reviewer that silently
+//     vanished, which is a nasty thing to debug because every other reviewer is running
+//     normally. It is also strictly worse than the mode-1 auto-deny it was added to
+//     prevent: mode 1 costs one reviewer, mode 3 cost an entire completed four-reviewer
+//     panel through the null-guard bug (fixed below, 836k subagent tokens lost).
+//     DO NOT REINTRODUCE THE FLAG, and do not phrase around the classifier. Instructing a
+//     sub-agent to disable another agent's approval gate is the act being objected to;
+//     wording it more persuasively does not make it a different act. The flag is fine when
+//     a human runs agy directly — that is a person authorizing their own tool — and that
+//     is the recovery path in Phase 1 if agy ever does need it.
+//  2. SAFETY REFUSAL ON THE PROMPT WORDING (observed 2026-07-28). Asked to look for "security issues" and
 //     "vulnerabilities", Gemini refused outright: "My safety guidelines strictly prohibit
 //     me from performing vulnerability analysis or security scanning on user-provided
 //     code." Phrase agy's prompt as ordinary code review — correctness, data integrity,
@@ -310,8 +341,11 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 const AGY_WRAPPER = `You are a wrapper around the Antigravity CLI (agy), producing an external (Gemini) code-review perspective.
 Steps:
 1. DIFF_FILE="$(mktemp -t agy_panel_diff.XXXXXX)" then write the diff: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes).
-2. Run with a hard 9-minute bound: timeout 540 agy --sandbox --dangerously-skip-permissions --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --prompt "Review the code changes in the diff file at $DIFF_FILE. Read that file with your file tools, and open full source files in this workspace for context when needed. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only."
-   PROMPT WORDING IS LOAD-BEARING: do not add "security issues", "vulnerabilities" or "security scanning" — that phrasing triggers a flat safety refusal from this model (observed 2026-07-28), and a refusal is indistinguishable from a clean review in the output.
+2. Run with a hard 9-minute bound: timeout 540 agy --sandbox --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --prompt "Review the code changes in the diff file at $DIFF_FILE. Read that file with your file tools, and open full source files in this workspace for context when needed. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only."
+   TWO THINGS ON THAT COMMAND LINE ARE LOAD-BEARING, and both fail silently if changed.
+   (a) PROMPT WORDING: do not add "security issues", "vulnerabilities" or "security scanning" — that phrasing triggers a flat safety refusal from this model (observed 2026-07-28), and a refusal is indistinguishable from a clean review in the output.
+   (b) NO PERMISSIONS FLAG: do not add --dangerously-skip-permissions. A sub-agent prompt carrying it is blocked by a classifier before the agent starts (observed 2026-08-11), which looks like a reviewer that never existed. The prompt only uses file tools, so the flag is not needed — verified by running without it.
+   Keep the prompt to reading files. The moment it asks agy to run shell commands, mode 1 comes back and the flag is not the way out of it.
 3. If it times out or errors, retry ONCE with the prompt narrowed to the most important files in the diff, keeping the same neutral wording. If agy reports a TOOL DENIAL ("a tool required the \\"command\\" permission") or REFUSES ON POLICY GROUNDS, say so explicitly in failed: — those are reviewer failures, NOT zero findings, and reporting them as a clean bill of health is the worst available outcome. If the retry also fails, return findings: [] and failed: "<what happened>".
 4. Only rm the diff file after agy has returned. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
 Translate agy's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields agy does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}. ${READ_ONLY}`
@@ -400,8 +434,20 @@ const reviewerStatus = {}
 const all = []
 for (let i = 0; i < REVIEWERS.length; i++) {
   const res = raw[i]
-  if (!res || res.out.failed) {
-    reviewerStatus[REVIEWERS[i].id] = `FAILED: ${res ? res.out.failed : 'agent died or was skipped'}`
+  // THE NULL ARRIVES WRAPPED, which is why `!res` alone is not the guard.
+  // `agent()` resolves to null when the agent is blocked or dies on a terminal
+  // error, and the `.then((out) => ({ id, out }))` above turns that null into
+  // `{ id, out: null }` — a TRUTHY object. So `!res` never fires, `res.out.failed`
+  // throws, and the whole panel dies in the collection loop AFTER every surviving
+  // reviewer has finished and its tokens are spent. Observed 2026-08-11: one
+  // blocked reviewer destroyed a completed 4-reviewer run (836k subagent tokens).
+  if (!res || !res.out || res.out.failed) {
+    const why = !res
+      ? 'agent died or was skipped'
+      : !res.out
+        ? 'agent returned no result (blocked by a classifier, or a terminal error)'
+        : res.out.failed
+    reviewerStatus[REVIEWERS[i].id] = `FAILED: ${why}`
     continue
   }
   reviewerStatus[res.id] = `ok (${res.out.findings.length} findings)`
