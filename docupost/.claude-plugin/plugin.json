@@ -1,0 +1,9 @@
+{
+  "name": "docupost",
+  "description": "Send real physical mail (letters, certified mail, postcards) from Claude Code via the DocuPost print-and-mail API, with a print-styled preview and user approval before anything is billed.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Eric"
+  },
+  "keywords": ["mail", "letters", "docupost", "postal", "certified-mail"]
+}

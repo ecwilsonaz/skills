@@ -16,6 +16,11 @@
       "name": "faithful-revision",
       "source": "./faithful-revision",
       "description": "Two-phase prose revision (structure, then line polish) with integrity gates that keep facts, attributions, and voice unchanged."
+    },
+    {
+      "name": "docupost",
+      "source": "./docupost",
+      "description": "Send real physical mail (letters, certified, postcards) via the DocuPost API, with print preview and approval before billing."
     }
   ]
 }
