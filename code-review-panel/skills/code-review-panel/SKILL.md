@@ -8,11 +8,13 @@ description: Run parallel code reviews from a panel of AI reviewers (3 Claude mo
 You are orchestrating a **multi-reviewer code review panel** — a core of five reviewers,
 expandable with OpenRouter-hosted models on request. The design is hybrid: the
 **main conversation owns the two user decisions** (scope selection before, finding triage
-after), and a **Workflow owns everything between them** (fan-out, collection, dedup,
-adversarial verification, ranking). Do not run reviewers as ad-hoc Agent/Bash calls when
-the Workflow tool is available — the workflow gives structured findings, bounded external
-CLIs, live progress via `/workflows`, and resume via `resumeFromRunId` if one reviewer
-dies. (If the Workflow tool is unavailable, see Fallback at the end.)
+after) **plus the codex run** (see "The standalone codex run" — codex cannot live inside
+the workflow), and a **Workflow owns everything between them** (fan-out of the other four
+reviewers, collection, dedup, adversarial verification, ranking). Do not run the other
+reviewers as ad-hoc Agent/Bash calls when the Workflow tool is available — the workflow
+gives structured findings, bounded external CLIs, live progress via `/workflows`, and
+resume via `resumeFromRunId` if one reviewer dies. (If the Workflow tool is unavailable,
+see Fallback at the end.)
 
 ## User Input
 
@@ -34,15 +36,40 @@ The core panel is the five reviewers in the script. `$ARGUMENTS` can expand it:
 
 | Shortname | OpenRouter model |
 |-----------|------------------|
-| grok | `x-ai/grok-4.3` |
+| grok | `x-ai/grok-4.20` |
 | deepseek | `deepseek/deepseek-v4-pro` |
-| kimi | `moonshotai/kimi-k2.7-code` |
-| glm | `z-ai/glm-5.2` |
+| kimi | `moonshotai/kimi-k3` |
+| glm | `z-ai/glm-5.3` |
 | qwen | `qwen/qwen3-coder-plus` |
 
-(IDs verified 2026-07-03 against `https://openrouter.ai/api/v1/models` — they rot; when
-a wrapper reports an unknown-model error, refresh from that endpoint and update this
-table.) Requirements: the `opencode` CLI (`brew install opencode`) and
+**REFRESH THIS TABLE AT THE START OF EVERY PANEL THAT USES IT — one curl, before the
+first wrapper runs, not when something breaks:**
+
+```bash
+curl -s https://openrouter.ai/api/v1/models | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']
+for pre in ['x-ai/grok','deepseek/deepseek-v4','moonshotai/kimi','z-ai/glm-5','qwen/qwen3-coder']:
+    for m in sorted((x for x in d if x['id'].startswith(pre)), key=lambda x: x['id']):
+        p=m.get('pricing',{})
+        print(f\"{m['id']:<42} ctx={m.get('context_length'):<9} \${float(p.get('prompt',0))*1e6:.2f}/\${float(p.get('completion',0))*1e6:.2f}\")"
+```
+
+**The old rule was "refresh when a wrapper reports an unknown-model error", and that rule
+CANNOT catch the case that actually happens.** An error fires only when a listed model
+DISAPPEARS. A newer, better model appearing fires nothing, so the table keeps working
+while quietly naming last quarter's models — which is worse than breaking, because
+nothing prompts anyone to look. Found 2026-08-29: the table still said
+`kimi-k2.7-code` (262k context) while `kimi-k3` had shipped at 1M, and FOUR of the five
+entries were superseded. Only `qwen3-coder-plus` was still current.
+
+Two things about reading the refreshed list. **Version numbers here are not decimals** —
+`grok-4.20` is newer than `grok-4.6`, and a `-multi-agent` or `:batch` sibling usually
+marks the current flagship line. And **the newest is not automatically the pick**: check
+the context window against your diff size and the price against how many reviewers you
+are running. Prefer a `-code`/`-coder` variant when one exists at a comparable tier.
+
+(IDs verified 2026-08-29 against `https://openrouter.ai/api/v1/models`.) Requirements: the `opencode` CLI (`brew install opencode`) and
 `OPENROUTER_API_KEY` in the environment — never print the key. If models were requested
 but the CLI or key is missing, say so and run core-only; do not improvise another route.
 
@@ -53,15 +80,18 @@ third-party GPU clouds (Novita, Together, DeepInfra, Google, Fireworks, Cloudfla
 so a provider allowlist naming only the model-owner orgs blocks nearly everything; the
 allowlist must also intersect the training/ZDR toggles or the result is empty. Diagnose
 with `GET /api/v1/models/<id>/endpoints` (provider_name list) and report which models
-the policy excludes; changing the policy is the user's call. Kimi note: k2.7-code is
-the panel default — kimi-k2-thinking produced 10× the output cost for no unique
-confirmed findings on its first run (2026-07-03).
+the policy excludes; changing the policy is the user's call. Kimi note: kimi-k3 is
+the panel default since 2026-08-29. The older measurement it replaced — kimi-k2-thinking
+producing 10× the output cost for no unique confirmed findings (2026-07-03) — was a
+comparison against its OWN sibling, and it was read for two months as a reason not to
+look at Kimi again. A cost finding about one variant says nothing about the next
+generation; re-measure rather than inherit it.
 
 **OpenAI models (Sol, GPT-5.x): do NOT route through OpenRouter.** The codex CLI in the
 core panel is already authenticated against OpenAI directly — an extra OpenAI-model
-reviewer runs as a second codex wrapper with a model override:
-`codex review <scope-flag> -c model="gpt-5.6-sol"` (same background + Monitor + tail
-rules as the core codex reviewer). OpenRouter adds a shared-quota/provider-policy
+reviewer runs as a second standalone codex run with a model override:
+`codex review <scope-flag> -c model="gpt-5.6-sol"` (same background + tail rules as the
+core standalone codex run). OpenRouter adds a shared-quota/provider-policy
 failure surface for no benefit (observed 2026-07-12: `openai/gpt-5.6-sol` via OpenRouter
 died on an upstream quota 502 while the codex CLI path was available the whole time).
 Version gate: gpt-5.6-sol rejects older CLIs — v0.133 returns 400 "requires a newer
@@ -69,7 +99,7 @@ version of Codex"; upgrade via `npm install -g @openai/codex@latest` (it is an n
 global on this machine, not brew) before launching the panel, not mid-run. (As of
 2026-07-18 this machine runs codex-cli v0.144.1; a direct `codex review` used model
 gpt-5.5 and prints its findings under a "Review comment:" header — see the marker note
-in CODEX_WRAPPER.)
+in "The standalone codex run".)
 
 ## Phase 0: Determine Review Scope (main conversation, do this ONCE)
 
@@ -90,6 +120,11 @@ Then choose ONE mode that all reviewers will use:
 - **"Specific files"** — Ask which files/directories; reviewers get a targeted scope description.
 - **"Specific commit"** — Ask for a SHA. Uses `--commit <sha>`, diff `<sha>~1...<sha>`.
 
+**Start codex immediately after choosing the mode** — it is the panel's long pole and it
+runs OUTSIDE the workflow (see "The standalone codex run" below). Launch it as a
+background Bash task before composing the context paragraph, so it reviews while you
+finish Phase 0 and the workflow runs.
+
 Also compose a short **project context** paragraph: what the repo is, what the change set
 does, and the paths of any governing contract/spec documents the code must honor.
 Context-aware reviewers find contract violations that generic ones miss — spend two or
@@ -108,6 +143,75 @@ Then derive two more inputs:
   `priorDispositions` (empty string otherwise) — the merge agent uses it to label
   re-found issues with their prior fate instead of re-triaging them cold.
 
+**Round start, when this is a CONVERGENCE campaign (a branch the owner merges only after a
+clean round).** Two checks before launching, added 2026-09-08 after `feat/review-extraction`
+took four rounds and seven gate passes, most of it on code no earlier round had seen:
+
+- **Freeze the scope at round 1 and say so in the intent block.** From then on a change lands
+  on the branch only as the fix for a finding. Anything else the owner wants — a new rule, a
+  re-measurement, a strip, an optimisation — goes on a follow-up list in the disposition file,
+  or the owner accepts, stated up front, that it costs one more full round. On that branch
+  round 2 found nine of twelve issues in code round 1 never saw (a leak commit and a
+  calibration read added between rounds), and gate pass 4 found eight findings all on the
+  change gate pass 3 introduced. Every mid-campaign addition resets the count.
+- **Grill the design before the first round, on failure semantics.** Run the `grilling` skill
+  (or one pinned-opus skeptic with the same brief) over the design's decisions section with
+  the questions a panel round otherwise spends a HIGH to ask: what does each floor, gate or
+  budget do when its provider is down, when its input is empty, when it is called from the
+  built artifact rather than the source tree. Round 1's CRITICAL (a fixture absent from
+  `dist/`) and round 3's HIGH (an outage ledgered as a thin film for ninety days) were both
+  design gaps a cold read of the design would have found before any code existed.
+
+## The standalone codex run (main conversation, never inside the workflow)
+
+Codex used to run as a fifth in-workflow wrapper agent. That design failed twice the
+same way (2026-07-18, 2026-08-13): codex can legitimately run 30+ minutes, the
+workflow's structured-output enforcement window is shorter, and when the wrapper is
+terminated its death **orphan-kills the codex process mid-review** — the panel loses
+the reviewer AND the partial run. A wrapper prompt cannot out-wait the harness, so
+codex now runs from the main conversation, where no enforcement window exists, and its
+findings enter the workflow as data (`codexFindings`).
+
+Launch (background Bash, `run_in_background: true`, output redirected to a log):
+
+```bash
+codex review <codex scope flag> -c model="gpt-5.6-sol" -c model_reasoning_effort="high" \
+  > <scratchpad>/codex-review-<scope-label>.log 2>&1
+```
+
+- **Model and effort are pinned explicitly** so a drifted `~/.codex/config.toml` cannot
+  silently downgrade the reviewer. gpt-5.6-sol at high effort is the best verified
+  configuration (confirmed running 2026-08-13 on codex-cli v0.147.0). When a newer
+  model ships, update the flag here after one verified run. Version gate: gpt-5.6-sol
+  rejects CLIs older than ~v0.134 with a 400; upgrade via
+  `npm install -g @openai/codex@latest` before launching, not mid-run.
+- Exactly one scope flag (`--base <sha>`, `--uncommitted`, `--commit <sha>`). Older
+  CLIs rejected a prompt argument beside a scope flag; v0.147.0's help documents an
+  optional `[PROMPT]` for custom review instructions, but that combination is
+  unverified here — test it once before relying on it for focus instructions.
+- The harness notifies you when the background task exits — do not poll, and NEVER
+  TaskStop it to hurry the panel; a killed codex is a lost reviewer.
+- On exit, read only the END of the log: the trailing findings block after the final
+  "Review comment:" (v0.144.1+) or "Full review comments:" (older) header. The
+  transcript above it is its working log — tail the file, never read it whole.
+- Translate the findings faithfully into the workflow's findings shape — one object
+  per finding: `severity` (map P1→HIGH, P2→MEDIUM, P3→LOW unless codex states
+  severities), `file`, `line`, `summary`, `detail`, `fix`, `scope`
+  (this-change / pre-existing / preference, classified against the diff and intent),
+  `why_it_matters`. Do not add findings of your own.
+- **Sequencing.** If codex finishes before you launch the workflow, pass the array as
+  `codexFindings` and everything flows through dedup/consensus/verify normally. If the
+  workflow finishes first, relaunch it with `resumeFromRunId` and the same args plus
+  `codexFindings` filled in — the four reviewers return from cache instantly and only
+  Consolidate/Verify re-run, now with codex included. Either way codex findings get
+  full consensus treatment; the old "fold in by hand, consensus of 1" caveat is gone.
+- **Section campaigns** (many panels over one code state): codex cannot be
+  path-scoped, so run it ONCE against the whole tree, then slice the translated
+  findings by each panel's paths and pass each panel its slice. Findings in files no
+  panel claims get one triage pass at the end of the campaign. Re-run the standalone
+  review when the tree has changed enough that the report is stale (e.g. between
+  tiers, after a batch of fixes lands).
+
 ## Phase 1: Run the Panel Workflow
 
 Invoke the Workflow tool with the script below and args (an actual JSON object, not a
@@ -117,16 +221,21 @@ string):
 {
   "scope": "<one-line scope statement, e.g. 'commit a1b2c3d' or 'all uncommitted changes'>",
   "diffCommand": "<diff command from Phase 0, exactly as a reviewer should run it>",
-  "codexFlag": "<codex scope flag from Phase 0, e.g. '--commit a1b2c3d'>",
   "context": "<project context paragraph, including contract/spec doc paths>",
   "intent": "<the three-line intent block from Phase 0: Purpose / In scope / Out of scope>",
   "priorDispositions": "<content of .claude/reviews/panel-<scope-label>.md, or ''>",
-  "openrouterModels": [ { "id": "grok", "model": "x-ai/grok-4.3" } ]
+  "openrouterModels": [ { "id": "grok", "model": "x-ai/grok-4.20" } ],
+  "codexFindings": null
 }
 ```
 
 `openrouterModels` is `[]` unless the user's panel-size directive selected models
-(shortname → `id`, registry value → `model`).
+(shortname → `id`, registry value → `model`). `codexFindings` is the standalone codex
+run's translated findings array when that run has already completed, else `null` —
+null means "not folded in yet", and the result's `reviewerStatus.codex` will say so;
+resume with the array filled in once codex exits (see "The standalone codex run").
+An empty array `[]` means codex finished with zero findings and counts as a succeeded
+reviewer.
 
 Before/while it runs:
 
@@ -135,8 +244,9 @@ Before/while it runs:
   string-delivered `args` itself and returns `{ error, panelSize: 0 }` rather than
   running a degraded panel, but verify anyway, because the string form is not the only
   way args can arrive wrong. Count `"type":"started"` lines in the run's journal.jsonl
-  (transcript dir is in the tool result) — it must equal the reviewer count *including*
-  OpenRouter models. Then confirm the values actually landed:
+  (transcript dir is in the tool result) — it must equal the reviewer count: 4 in-workflow
+  core reviewers plus OpenRouter models (codex is standalone, never an in-workflow
+  agent). Then confirm the values actually landed:
   `grep -o 'Scope: [^.]*' agent-*.jsonl` in that directory must show your real scope
   string, never "undefined".
   Observed twice (2026-07-03, 2026-07-27): args arrived as a JSON string, so `args.scope`
@@ -148,19 +258,14 @@ Before/while it runs:
   `args.` reference with `CFG.`), and relaunch via scriptPath. A started-count that is
   short by exactly the number of OpenRouter models is this bug until proven otherwise —
   the concurrency cap is `min(16, cores - 2)`, so on any machine with ≥10 cores a
-  7–8 reviewer panel should start every agent at once.
+  6–7 agent panel should start every agent at once.
 - Tell the user they can watch live progress with `/workflows`.
 - If the result's `reviewerStatus` shows a failed reviewer, report it honestly above the
   summary table; the wrappers already retried once internally — do not relaunch the panel
   for one failure. Consensus denominators use `panelSize` (succeeded reviewers).
-  - **Codex-specific recovery:** codex is the reviewer most likely to fail this way —
-    its runtime can exceed the workflow's structured-output enforcement window even when
-    the wrapper waits correctly (observed 2026-07-18). To get codex's read without
-    re-running the whole panel, run it DIRECTLY from the main conversation, outside the
-    workflow: `codex review <codexFlag>` in the background (redirect to a log), monitor
-    the log for its trailing findings block, then read the tail. Outside the workflow
-    there is no structured-output enforcement window, so it runs to completion (this
-    reliably recovered a force-terminated codex on 2026-07-18).
+  - **Codex is never a workflow failure any more** — it runs standalone (see "The
+    standalone codex run"). `reviewerStatus.codex` saying "not included yet" is not a
+    failure; it is the cue to resume with `codexFindings` once the background run exits.
   - **Antigravity-specific recovery:** agy can fail in a way that emits NO start event at
     all — a classifier can block the sub-agent before it launches, so the reviewer is
     simply absent rather than failed (observed 2026-08-11; see the mode-3 note above the
@@ -179,14 +284,16 @@ Before/while it runs:
 - To re-run after a partial failure, relaunch with `resumeFromRunId` — completed
   reviewers return from cache instantly. This is also the fix for a crash in the
   collection/merge phases: the reviewers are cached, so a resume costs only the phases
-  that never ran.
+  that never ran. And it is the NORMAL second step whenever the workflow finished
+  before the standalone codex run did: resume with the same args plus `codexFindings`
+  filled in, and only Consolidate/Verify re-run.
 
 ```js
 export const meta = {
   name: 'review-panel',
-  description: 'Independent code reviewers in parallel (core five plus any OpenRouter models); consolidate, dedupe, adversarially verify, rank',
+  description: 'Independent code reviewers in parallel (3 Claude + Antigravity + optional OpenRouter; codex findings supplied from a standalone run); consolidate, dedupe, adversarially verify, rank',
   phases: [
-    { title: 'Review', detail: 'parallel reviewers: 3 Claude + Antigravity + Codex + optional OpenRouter via opencode' },
+    { title: 'Review', detail: 'parallel reviewers: 3 Claude + Antigravity + optional OpenRouter via opencode (codex runs standalone outside the workflow)' },
     { title: 'Consolidate', detail: 'merge and dedupe findings across reviewers' },
     { title: 'Verify', detail: 'skeptic pass on single-reviewer findings' },
   ],
@@ -206,7 +313,7 @@ try {
 } catch {
   return { error: 'args arrived as an unparseable string — pass args as a real JSON object, or bake a `const CFG = {…}` literal into the script and relaunch via scriptPath.', issues: [], reviewerStatus: {}, panelSize: 0 }
 }
-const MISSING = ['scope', 'diffCommand', 'codexFlag', 'context', 'intent'].filter((k) => !CFG[k])
+const MISSING = ['scope', 'diffCommand', 'context', 'intent'].filter((k) => !CFG[k])
 if (MISSING.length) {
   return { error: `Required args missing: ${MISSING.join(', ')} (args arrived as ${typeof args}). Bake a \`const CFG = {…}\` literal into the persisted script and relaunch via scriptPath.`, issues: [], reviewerStatus: {}, panelSize: 0 }
 }
@@ -287,21 +394,11 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 //   argument-size limit — no large-diff fallback needed.
 // - agy's --print-timeout is UNRELIABLE (observed running 3x past it and hanging);
 //   the wrapper MUST bound it with a foreground `timeout` and retry once itself.
-// - codex review needs exactly one scope flag, rejects a prompt argument alongside
-//   it, and has no --approval-mode. It can legitimately run 30+ minutes on big
-//   diffs — run it in background and wait for the completion notification; never
-//   read its full transcript (it is huge), only the tail findings block it prints
-//   at the very end. The header STRING has changed across CLI versions — older
-//   CLIs printed "Full review comments:", v0.144.1 (observed 2026-07-18) prints
-//   "Review comment:" — so match the trailing findings block generically; do not
-//   grep for one fixed marker (a stale grep silently never fires and a watch
-//   falls through to process-exit).
-// - The wrapper must NEVER wait for codex by ending its turn or via a foreground
-//   sleep/kill-0 loop: the harness converts such loops into ANOTHER background
-//   task, the turn ends with nothing to report, the workflow fails the reviewer
-//   after one structured-output nudge, and the orphaned codex process is killed
-//   mid-review (observed 2026-07-03, chunk-3 run). Waiting happens ONLY via the
-//   Monitor tool, which keeps the turn alive.
+// - There is NO codex wrapper in this script, on purpose. Codex's runtime exceeds the
+//   workflow's structured-output enforcement window, and a terminated wrapper
+//   orphan-kills the CLI mid-review (observed 2026-07-03, 2026-07-18, 2026-08-13 —
+//   three separate waiting strategies, same death). It runs standalone in the main
+//   conversation and arrives here as CFG.codexFindings. Do not reintroduce a wrapper.
 // THREE SEPARATE agy failure modes. They look alike from outside (no findings) and none
 // is a clean review:
 //  1. HEADLESS AUTO-DENY (observed 2026-07-28). agy asks for the `command` permission,
@@ -350,14 +447,6 @@ Steps:
 4. Only rm the diff file after agy has returned. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
 Translate agy's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields agy does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}. ${READ_ONLY}`
 
-const CODEX_WRAPPER = `You are a wrapper around the Codex CLI, producing an external code-review perspective.
-Steps:
-1. Run in BACKGROUND, redirecting output to a log file (it may take 30+ minutes): codex review ${CFG.codexFlag}
-2. WAIT CORRECTLY — this is the part that has failed before. Load the Monitor tool (ToolSearch "select:Monitor") and monitor the background task / log file until codex exits or the log emits its trailing findings block (a "Review comment:"/"Full review comments:" section — the exact header varies by CLI version, so watch for the findings block itself, not a fixed string); renew the monitor for up to ~25 minutes total. NEVER end your turn to "wait for the completion notification" and NEVER wait with a foreground sleep/kill-0 Bash loop — the harness converts those to background tasks, your turn ends without structured output, the workflow fails you after one nudge, and your death orphan-kills codex mid-review. If Monitor is unavailable after loading, fall back to repeated SHORT foreground Bash checks (tail the log, test liveness) — many quick calls, never one long wait. NOTE: codex is the most timeout-prone reviewer — its runtime can exceed the workflow's structured-output enforcement window (observed 2026-07-18: force-terminated mid-review while waiting correctly). If that happens, returning findings: [] with a failed: reason is correct; the main conversation recovers it (see Phase 1).
-3. When it completes, read only the END of its output — the trailing findings block (after the final "Review comment:" or "Full review comments:" header, whichever this CLI prints). The transcript above it is its working log; tail the file, never read it whole.
-4. Translate its findings into the structured schema faithfully (map P1→HIGH, P2→MEDIUM, P3→LOW unless it states severities directly); do not add findings of your own. For the scope and why_it_matters fields codex does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}.
-5. If codex errors out, retry ONCE; if that fails, return findings: [] and failed: "<what happened>". ${READ_ONLY}`
-
 // OpenRouter reviewers run via `opencode run` (verified 2026-07-03):
 // - `--agent plan` is the read-only mode; its permission gate AUTO-DENIES
 //   file access outside the workspace in non-interactive runs, so the diff
@@ -394,10 +483,15 @@ Steps:
 Translate the model's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and the stated intent. ${READ_ONLY}`
 
 phase('Review')
+// EVERY agent() call in this script pins an explicit model. Without a pin a subagent
+// inherits the main-loop model, and when the orchestrator runs on a premium tier
+// (e.g. Fable/Mythos-class) the whole fan-out silently bills against it. The
+// orchestrator's tier buys nothing here: reviewer diversity comes from the mix, and
+// merge/verify are bounded judgment tasks opus handles. Keep the pins when editing.
 const REVIEWERS = [
   {
     id: 'code-reviewer',
-    opts: { agentType: 'superpowers:code-reviewer', label: 'code-reviewer' },
+    opts: { agentType: 'superpowers:code-reviewer', model: 'opus', label: 'code-reviewer' },
     prompt: `Review this change set for bugs, security issues, contract/spec mismatches, data integrity problems, and code quality issues, checking the code against any governing contract documents named in the context. ${COMMON}`,
   },
   {
@@ -410,8 +504,7 @@ const REVIEWERS = [
     opts: { model: 'opus', label: 'opus-deep' },
     prompt: `You are a senior reviewer doing a deep architectural pass. Focus on subtle logic bugs, race conditions, fail-open vs fail-closed behavior, edge cases in parsing/config handling, drift hazards between code and its contracts, and issues other reviewers might miss. ${COMMON}`,
   },
-  { id: 'antigravity', opts: { label: 'antigravity-gemini' }, prompt: AGY_WRAPPER },
-  { id: 'codex', opts: { label: 'codex' }, prompt: CODEX_WRAPPER },
+  { id: 'antigravity', opts: { model: 'sonnet', label: 'antigravity-gemini' }, prompt: AGY_WRAPPER },
   // Each OpenRouter reviewer is handed its slice index. With N of them the diff is cut
   // into N disjoint slices when it is large (see orWrapper step 1), so the panel covers
   // the whole change set across the group rather than having every model time out trying
@@ -419,7 +512,7 @@ const REVIEWERS = [
   // is the previous behaviour.
   ...(CFG.openrouterModels ?? []).map((m, i, all) => ({
     id: `or-${m.id}`,
-    opts: { label: `or-${m.id}` },
+    opts: { model: 'sonnet', label: `or-${m.id}` },
     prompt: orWrapper({ ...m, sliceIndex: i, sliceCount: all.length }),
   })),
 ]
@@ -453,8 +546,21 @@ for (let i = 0; i < REVIEWERS.length; i++) {
   reviewerStatus[res.id] = `ok (${res.out.findings.length} findings)`
   for (const f of res.out.findings) all.push({ ...f, reviewer: res.id })
 }
+
+// Codex runs OUTSIDE the workflow (standalone in the main conversation — see the
+// wrapper-constraints comment above). Its findings arrive pre-translated via
+// CFG.codexFindings: an array (possibly empty — a clean codex pass is a succeeded
+// reviewer) folds it into consolidation with full consensus treatment; null/absent
+// means the standalone run has not finished — resume this run with codexFindings
+// filled in, and the four in-workflow reviewers return from cache.
+if (Array.isArray(CFG.codexFindings)) {
+  reviewerStatus['codex'] = `ok (${CFG.codexFindings.length} findings, from the standalone run)`
+  for (const f of CFG.codexFindings) all.push({ ...f, reviewer: 'codex' })
+} else {
+  reviewerStatus['codex'] = 'not included yet: standalone codex still running — resume with codexFindings to fold it in'
+}
 const panelSize = Object.values(reviewerStatus).filter((s) => s.startsWith('ok')).length
-log(`${panelSize}/${REVIEWERS.length} reviewers succeeded, ${all.length} raw findings`)
+log(`${panelSize} reviewers succeeded (${REVIEWERS.length} in-workflow; standalone codex ${Array.isArray(CFG.codexFindings) ? 'included' : 'pending'}), ${all.length} raw findings`)
 
 if (all.length === 0) {
   return { issues: [], reviewerStatus, panelSize }
@@ -465,7 +571,7 @@ const merged = await agent(
   `Below are ${all.length} code-review findings from ${panelSize} independent reviewers, as JSON. Group findings that describe the SAME underlying issue (even if worded differently or anchored a few lines apart); keep genuinely distinct issues separate. For each group report: the highest severity assigned, the clearest summary/fix, merged detail noting differing observations, the distinct reviewer ids, a resolved scope, and a short-kebab-case slug.
 Scope resolution (anchor rule): findings classified "preference" whose why_it_matters states no concrete failure scenario are DROPPED — list their summaries in a final log line of your reasoning, but not in issues[]. Never drop this-change or pre-existing findings. When reviewers disagree on scope, a concrete failure scenario wins.
 Prior dispositions from earlier panel runs on this scope (may be empty): when an issue matches an entry, REUSE its slug and set priorDisposition to its recorded fate.\n${CFG.priorDispositions}\n\n${JSON.stringify(all)}`,
-  { label: 'merge-dedupe', phase: 'Consolidate', schema: MERGE_SCHEMA },
+  { label: 'merge-dedupe', phase: 'Consolidate', model: 'opus', schema: MERGE_SCHEMA },
 )
 
 phase('Verify')
@@ -478,7 +584,7 @@ const verified = await parallel(merged.issues.map((issue) => () => {
   }
   return agent(
     `Adversarially verify this code-review finding — try to REFUTE it by reading the actual code (and running cheap checks). Default to real=false if you cannot confirm the failure scenario concretely. For scope "pre-existing" findings be extra demanding: a genuine defect needs a concrete failure scenario in the code as it stands — an alternative approach dressed up as a bug is real=false.\nFinding: ${JSON.stringify(issue)}\nScope: ${CFG.scope}. ${READ_ONLY}`,
-    { label: `verify:${issue.file}`, phase: 'Verify', schema: VERDICT_SCHEMA },
+    { label: `verify:${issue.file}`, phase: 'Verify', model: 'opus', schema: VERDICT_SCHEMA },
   ).then((v) => ({ ...issue, verdict: v.real ? 'CONFIRMED' : 'REFUTED', verdictReason: v.reason }))
 }))
 
@@ -550,6 +656,74 @@ the finding implies), then move to the next issue. If a fix is deferred, leave a
 trail where the project tracks such things (task list, TODO doc) rather than only in
 conversation.
 
+**Fix verification gate (BEFORE the commit that closes the round).** Added 2026-08-13
+after a convergence campaign where rounds 5, 6 and 7 each found a defect IN THE PREVIOUS
+ROUND'S FIX — every one caught by a reviewer who MEASURED (an A/B sweep or diff probe
+against real data) while the fix had only been reasoned about and spot-checked against
+already-known cases. A full round exists to catch what ten minutes at fix time could
+have. So, once a round's fix batch is implemented and its ordinary checks pass, and
+before committing:
+
+1. **A/B blast-radius sweep**, when the fix changes a decision function with a real
+   input population available (a resolver, matcher, ranker, parser): run OLD code vs NEW
+   code over the full real population (or a large sample) and diff the outcomes. Every
+   changed outcome must be classified — intended improvement with evidence, or the fix
+   is wrong. Never calibrate a threshold from the finding's own examples; they are the
+   sample the reviewer happened to hit, and the counter-population is what the sweep is
+   for.
+2. **codex on the uncommitted diff** (`codex review --uncommitted`, same background +
+   tail rules as the standalone run). Cheap, already authenticated, and it covers the
+   class a data sweep cannot see: lock lifetimes, interleavings, error-path ordering.
+3. **One skeptic subagent** (pinned model, never the orchestrator's) prompted to REFUTE
+   the fix: enumerate the truth table of every new/changed predicate and hunt the empty
+   cell — the case nobody named. (The three fix regressions above all lived in an
+   unconsidered cell: a sub-floor tie, an equal year distance, a lock released after
+   its directory was deleted.)
+
+Findings from the gate are fix iterations inside the SAME round — fix, re-run the gate,
+then commit. Skip the gate only for mechanical fixes (doc wording, dead-code deletion,
+test-only changes); anything touching decision logic, money paths, or locks gets it.
+Two authoring rules that need no tooling: enumerate the truth table of any new boolean
+predicate before writing it, and any test fixture claiming to mirror real data must be
+QUERIED from that data at authoring time, never typed from memory.
+
+Two more, added 2026-09-08 after a four-round, seven-gate-pass campaign
+(`feat/review-extraction`) whose churn traced to exactly these:
+
+4. **A fix that adds a threshold, ratio, classifier or diagnosis branch gets the OWNER'S
+   RULE FIRST, as a written truth table, then the sweep.** Not the reviewer's proposal and
+   not the fixer's guess. The refusal diagnosis on that branch moved FOUR times in one day
+   — slot count, ratio of medians, per-page ratio, drop evidence — each version encoding a
+   guess about what the rule meant, each falsified by the next skeptic measuring the
+   population (37% of the sub-floor pages sat under the ratio with every anchor verified).
+   One AskUserQuestion at round 1 ("drop evidence, ratio, or slot count?") would have cut
+   two gate passes. The tell: a finding whose fix could be written several plausible ways
+   is a design question wearing a bug's clothes; the round-3 outage threshold repeated the
+   pattern (all-failed → any-unheard → status classes → refusal evidence → count location).
+5. **A parser or text-transform fix needs at least one fixture CAPTURED from a real page,
+   and a mutation that removes the feature must fail it.** The paragraph unit the whole
+   roundup rule rested on was DEAD IN PRODUCTION under 4,766 green tests, because every
+   fixture was typed markup that never exercised the `\s+` collapse in the real cleaner;
+   codex's cold read of the fetcher found it in gate pass 3, after two passes had built on
+   top of it. Rule 1's "queried, never typed" covers data; this is its markup form.
+
+**Routed findings are dispositions, not side-channel notes.** When a reviewer surfaces
+a real finding OUTSIDE the review's scope (a design doc, another feature's spec, a file
+another owner holds), it goes into the disposition table as its own row with disposition
+`routed`, naming who it went to — never only into a JSON side file nothing points at.
+Added 2026-08-13 after codex found four P1s in a concurrent feature's specs across three
+rounds and each reached that feature's owner only because a human happened to relay it;
+two would have shipped otherwise. Follow-up rounds check routed rows for closure the way
+they check deferred ones.
+
+**Amended docs get read cold.** When a prior round's routed finding caused a design doc
+to be amended, the next round's standalone codex (or a reviewer) reads the AMENDED file
+fresh, hunting the append-contradiction: a correction added in one place while the
+original claim stands elsewhere in the same document. Observed twice in one campaign — a
+task list that both added and forbade the same column, and a data-model correction whose
+task list still said the opposite — both caught only by a cold read of the whole amended
+file, neither by the author of the amendment.
+
 **After triage, append the disposition history** (append-only — never rewrite prior
 runs) to `.claude/reviews/panel-<scope-label>.md`, creating it with a title line if
 absent. One section per run:
@@ -580,13 +754,12 @@ user's stated reason or the fix commit. This file is what future runs receive as
 
 ## Fallback (Workflow tool unavailable)
 
-Launch the three Claude reviewers as parallel Agent calls and the CLI reviewers (agy,
-codex, and any selected OpenRouter models via opencode) as background Bash calls, using
+Launch the three Claude reviewers as parallel Agent calls and the CLI reviewers (agy
+and any selected OpenRouter models via opencode) as background Bash calls, using
 the same prompts and constraints embedded in the script above (diff-file + `--add-dir`
-for agy with a hard `timeout` and one retry; background + scope-flag-only for codex,
-reading only its trailing findings block (header varies by CLI version — "Review comment:"
-on v0.144.1, "Full review comments:" on older); in-repo diff file + `--agent plan`
-for opencode). Then
+for agy with a hard `timeout` and one retry; in-repo diff file + `--agent plan`
+for opencode). Codex already runs standalone in the main conversation in both designs —
+"The standalone codex run" applies unchanged. Then
 consolidate, count consensus, and rank manually before triage — applying the same anchor
 rule, scope classification, prior-disposition labeling, and pre-existing shelf described
 above. Do not proceed to triage until every successful reviewer's findings list is
