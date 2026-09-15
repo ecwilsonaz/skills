@@ -272,8 +272,13 @@ Before/while it runs:
     wrapper). Recover the same way as codex: run it yourself from the main conversation,
     in parallel with the workflow rather than after it, since agy takes minutes and the
     other reviewers are already running. Write the diff to a file outside the repo, then
-    `timeout 540 agy --sandbox --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --prompt "…"`
-    with the same neutral wording the wrapper uses. Fold its findings into triage by hand
+    from the repo root run
+    `timeout 540 agy --sandbox --add-dir "$REPO" --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --output-format json --prompt "…"`
+    with the same neutral wording the wrapper uses, and apply the same `denied_actions` /
+    empty-response check (a denied run exits 0). Never add `--dangerously-skip-permissions`
+    here either: see mode 3 — it is unsafe even run by hand.
+    A wrapper that reports the "command" permission auto-deny usually means the repo was not
+    an `--add-dir`; check that before concluding agy is broken. Fold its findings into triage by hand
     and say so in the report — a reviewer merged manually did not go through the dedup and
     consensus phases, so its findings carry a consensus of 1 by construction.
 - **A start-event count short of the reviewer count is a real signal, not noise.** Check it
@@ -389,7 +394,16 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 // External-CLI wrapper constraints (verified against the installed tools — do not
 // simplify these back to naive pipes):
 // - agy ignores piped stdin in print mode; hand it a diff FILE via --add-dir.
-// - agy --sandbox cannot see .git (blocked path), so it cannot run git diff itself.
+// - agy MUST ALSO GET THE REPO VIA --add-dir. Headless, its file tools do not treat the cwd as
+//   the workspace: without it, reads of source files are refused, the model reaches for a
+//   shell command instead, and that command is denied (mode 1). Measured 2026-09-14 — this is
+//   almost certainly what failed on PR 93's panel, where only the diff's temp dir was added.
+//   `notes/agy-sandbox-and-permissions.md` is the research behind every agy rule here.
+// - agy cannot run `git diff` itself: the `command` permission gate stops it headless. (It
+//   is NOT that --sandbox hides .git — since agy 1.1.10 sandboxed commands get read-only .git.)
+// - A DENIED HEADLESS RUN EXITS 0 WITH status "SUCCESS" AND AN EMPTY RESPONSE, and stops at
+//   the first denial. Only `--output-format json` exposes `denied_actions`, so the wrapper
+//   uses it and treats any denial or empty response as a failure, never as zero findings.
 // - Passing a file PATH (not diff text) as the prompt also avoids the OS E2BIG
 //   argument-size limit — no large-diff fallback needed.
 // - agy's --print-timeout is UNRELIABLE (observed running 3x past it and hanging);
@@ -408,10 +422,12 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 //     wrapper for two weeks. THE PROMPT BELOW ONLY READS FILES, so it does not hit this:
 //     verified 2026-08-11 by running agy with `--sandbox --add-dir` and NO permissions
 //     flag, which returned a normal answer at exit 0. Keep the prompt to file tools and
-//     the mode stays out of reach. If a future prompt does need shell, the route is a
-//     `permissions.allow` entry of the form command(<target>) in
-//     ~/.gemini/antigravity-cli/settings.json — syntax undocumented in `agy --help` and
-//     still unverified — NOT the flag, for the reason in mode 3.
+//     the mode stays out of reach — PROVIDED the repo is an --add-dir (see above). If a
+//     future prompt does need shell, the route is a whole-line command(<exact command>)
+//     grant in ~/.gemini/config/config.json under userSettings.globalPermissionGrants.allow,
+//     set by a person and verified first. NOT ~/.gemini/antigravity-cli/settings.json, which
+//     headless reportedly ignores for command() (issue #548, UNVERIFIED on 1.2.3/macOS), and
+//     NOT the flag, for the reasons in mode 3.
 //  3. BLOCKED BY A SAFETY CLASSIFIER BEFORE THE AGENT EVER STARTS (observed 2026-08-11).
 //     `--dangerously-skip-permissions` used to be in this wrapper. Putting it in a
 //     SUB-AGENT prompt trips the classifier: "[Create Unsafe Agents] The sub-agent prompt
@@ -425,9 +441,13 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 //     panel through the null-guard bug (fixed below, 836k subagent tokens lost).
 //     DO NOT REINTRODUCE THE FLAG, and do not phrase around the classifier. Instructing a
 //     sub-agent to disable another agent's approval gate is the act being objected to;
-//     wording it more persuasively does not make it a different act. The flag is fine when
-//     a human runs agy directly — that is a person authorizing their own tool — and that
-//     is the recovery path in Phase 1 if agy ever does need it.
+//     wording it more persuasively does not make it a different act. AND THE FLAG IS NOT
+//     SAFE EVEN WHEN A PERSON RUNS IT (researched 2026-09-14, corrected from an earlier line
+//     here that called it fine): --sandbox confines shell commands only, a blocked command's
+//     error invites a retry with `BypassSandbox: true`, and the flag auto-approves that retry
+//     (issue #36, confirmed intended by Google), so an instruction planted in the diff under
+//     review can run any command as the user with network. The file tools were never inside
+//     the sandbox either. There is no recovery path that uses the flag.
 //  2. SAFETY REFUSAL ON THE PROMPT WORDING (observed 2026-07-28). Asked to look for "security issues" and
 //     "vulnerabilities", Gemini refused outright: "My safety guidelines strictly prohibit
 //     me from performing vulnerability analysis or security scanning on user-provided
@@ -438,13 +458,15 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 const AGY_WRAPPER = `You are a wrapper around the Antigravity CLI (agy), producing an external (Gemini) code-review perspective.
 Steps:
 1. DIFF_FILE="$(mktemp -t agy_panel_diff.XXXXXX)" then write the diff: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes).
-2. Run with a hard 9-minute bound: timeout 540 agy --sandbox --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --prompt "Review the code changes in the diff file at $DIFF_FILE. Read that file with your file tools, and open full source files in this workspace for context when needed. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only."
-   TWO THINGS ON THAT COMMAND LINE ARE LOAD-BEARING, and both fail silently if changed.
+2. Set REPO to the repository the diff command reads: the path after "git -C" if the diff command has one, else "$(git rev-parse --show-toplevel)". Set AGY_OUT="$(mktemp -t agy_panel_out.XXXXXX)". Run with a hard 9-minute bound, from "$REPO": timeout 540 agy --sandbox --add-dir "$REPO" --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --output-format json --prompt "Review the code changes in the diff file at $DIFF_FILE. Read that file with your file tools, and open full source files in this workspace for context when needed. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only." > "$AGY_OUT" 2>&1
+   Then read "$AGY_OUT" as JSON. The findings are in .response. If .denied_actions is non-empty, .response is empty, or .status is not "SUCCESS", that is a FAILED run — report failed: "agy denied <the denied actions>" or "agy returned an empty response", never findings: []. A denied run exits 0 and says SUCCESS, so the exit code proves nothing. If the output is not JSON (an older agy without --output-format), say so in failed:.
+   THREE THINGS ON THAT COMMAND LINE ARE LOAD-BEARING, and all fail silently if changed.
+   (0) --add-dir "$REPO": without it agy's file tools cannot read the source files, it tries a shell command instead, and headless mode denies it — a run with no review in it.
    (a) PROMPT WORDING: do not add "security issues", "vulnerabilities" or "security scanning" — that phrasing triggers a flat safety refusal from this model (observed 2026-07-28), and a refusal is indistinguishable from a clean review in the output.
    (b) NO PERMISSIONS FLAG: do not add --dangerously-skip-permissions. A sub-agent prompt carrying it is blocked by a classifier before the agent starts (observed 2026-08-11), which looks like a reviewer that never existed. The prompt only uses file tools, so the flag is not needed — verified by running without it.
    Keep the prompt to reading files. The moment it asks agy to run shell commands, mode 1 comes back and the flag is not the way out of it.
 3. If it times out or errors, retry ONCE with the prompt narrowed to the most important files in the diff, keeping the same neutral wording. If agy reports a TOOL DENIAL ("a tool required the \\"command\\" permission") or REFUSES ON POLICY GROUNDS, say so explicitly in failed: — those are reviewer failures, NOT zero findings, and reporting them as a clean bill of health is the worst available outcome. If the retry also fails, return findings: [] and failed: "<what happened>".
-4. Only rm the diff file after agy has returned. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
+4. Only rm the diff file and "$AGY_OUT" after agy has returned and you have read the output. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
 Translate agy's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields agy does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}. ${READ_ONLY}`
 
 // OpenRouter reviewers run via `opencode run` (verified 2026-07-03):
