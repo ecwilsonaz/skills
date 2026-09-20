@@ -395,9 +395,23 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 // simplify these back to naive pipes):
 // - agy ignores piped stdin in print mode; hand it a diff FILE via --add-dir.
 // - agy MUST ALSO GET THE REPO VIA --add-dir. Headless, its file tools do not treat the cwd as
-//   the workspace: without it, reads of source files are refused, the model reaches for a
-//   shell command instead, and that command is denied (mode 1). Measured 2026-09-14 — this is
-//   almost certainly what failed on PR 93's panel, where only the diff's temp dir was added.
+//   the workspace. Measured 2026-09-14. NECESSARY BUT NO LONGER SUFFICIENT — see the grant below.
+// - ON agy >= 1.2.7 THE WORKSPACE ALONE GRANTS NO READS, AND THE PANEL NEEDS A read_file GRANT
+//   (measured 2026-09-19 on 1.2.7). A headless `view_file` of a file inside the workspace is
+//   auto-denied with `denied_actions: [{action: read_file, display_name: ViewFile}]`, EVEN with
+//   --add-dir and even under a path already listed in `trustedWorkspaces`. Both were verified
+//   directly: the same probe fails in an untrusted /private/tmp dir and in /Users/eric (a
+//   trustedWorkspaces entry) with cwd set to the repo. The 2026-09-14 finding that --add-dir
+//   was the whole fix held on 1.2.3 and does not hold now. THE FIX IS ONE PATH-SCOPED LINE in
+//   `~/.gemini/antigravity-cli/settings.json` (the file the error message names):
+//       {"permissions": {"allow": ["read_file(/abs/path/to/repo)"]}}
+//   Verified: with it, a headless review returns `denied_actions: null` and a real response.
+//   IT IS PATH-SCOPED AND THE SCOPE HOLDS — with that grant in place, reads of a file in $HOME
+//   and of a file in /private/tmp were both DENIED and neither marker appeared in the response.
+//   Prefer the repo path over `read_file(*)`: the diff under review is untrusted input, and `*`
+//   would let a prompt injection in it reach ~/.ssh, ~/.aws and every .env on the machine.
+//   This grant is the USER'S to add — it gives an agent standing read access to a tree. The
+//   wrapper detects its absence and reports the exact line to add, rather than failing vaguely.
 //   `notes/agy-sandbox-and-permissions.md` is the research behind every agy rule here.
 // - agy cannot run `git diff` itself: the `command` permission gate stops it headless. (It
 //   is NOT that --sandbox hides .git — since agy 1.1.10 sandboxed commands get read-only .git.)
@@ -413,8 +427,23 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 //   orphan-kills the CLI mid-review (observed 2026-07-03, 2026-07-18, 2026-08-13 —
 //   three separate waiting strategies, same death). It runs standalone in the main
 //   conversation and arrives here as CFG.codexFindings. Do not reintroduce a wrapper.
-// THREE SEPARATE agy failure modes. They look alike from outside (no findings) and none
+// FOUR SEPARATE agy failure modes. They look alike from outside (no findings) and none
 // is a clean review:
+//  4. THE READ AND DISCOVERY REGRESSION ON 1.2.7 (measured 2026-09-19). Two changes compound.
+//     `read_file` is no longer granted by workspace membership, so `view_file` is auto-denied
+//     (display_name ViewFile) until the grant above exists — this is what killed the reviewer
+//     on PR 99's panel, where the repo WAS passed as --add-dir, so the mode-1 diagnosis did
+//     not cover it. AND 1.2.7 "retired the legacy find_by_name, grep_search and list_dir tools
+//     from the default baseline", so with no discovery tools the model reaches for a SHELL
+//     command to explore the repo and lands in mode 1 — observed with the grant in place and a
+//     prompt that said "open full source files in this workspace for context when needed".
+//     THE PROMPT MUST THEREFORE FORBID SHELL EXPLICITLY AND NAME view_file WITH ABSOLUTE PATHS.
+//     With both halves — the grant and that prompt — a real review came back at
+//     `denied_actions: null`. Do not "fix" the shell fallback with a command() grant: that
+//     re-opens the whole command surface to reviewer-of-untrusted-diff, which is the thing
+//     mode 3 exists to refuse. The changelog says the retired tools remain available to custom
+//     agents that list them in `tools`; a read-only custom agent is the better long-term fix
+//     and is UNBUILT — no agents directory exists on this machine yet.
 //  1. HEADLESS AUTO-DENY (observed 2026-07-28). agy asks for the `command` permission,
 //     headless mode cannot prompt, so it auto-denies and returns "jetski: no output
 //     produced". This happens when agy wants to run a SHELL COMMAND — it is not a blanket
@@ -457,16 +486,19 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 //     "security scanning" or "exploit" into this prompt.
 const AGY_WRAPPER = `You are a wrapper around the Antigravity CLI (agy), producing an external (Gemini) code-review perspective.
 Steps:
-1. DIFF_FILE="$(mktemp -t agy_panel_diff.XXXXXX)" then write the diff: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes).
-2. Set REPO to the repository the diff command reads: the path after "git -C" if the diff command has one, else "$(git rev-parse --show-toplevel)". Set AGY_OUT="$(mktemp -t agy_panel_out.XXXXXX)". Run with a hard 9-minute bound, from "$REPO": timeout 540 agy --sandbox --add-dir "$REPO" --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --output-format json --prompt "Review the code changes in the diff file at $DIFF_FILE. Read that file with your file tools, and open full source files in this workspace for context when needed. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only." > "$AGY_OUT" 2>&1
+1. Set REPO to the repository the diff command reads: the path after "git -C" if the diff command has one, else "$(git rev-parse --show-toplevel)". Write the diff to a file INSIDE that repo — mkdir -p "$REPO/.claude/reviews" then DIFF_FILE="$REPO/.claude/reviews/.agy-panel-diff-$$.tmp" — with: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes). INSIDE the repo is load-bearing: a mktemp path is a SECOND workspace and falls outside the single read_file grant, so the diff itself becomes unreadable.
+2. Set AGY_OUT="$(mktemp -t agy_panel_out.XXXXXX)" (the OUTPUT may live outside the repo; agy writes it, agy never reads it). Run with a hard 9-minute bound, from "$REPO": timeout 540 agy --sandbox --add-dir "$REPO" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --output-format json --prompt "Review the code changes in the diff file at $DIFF_FILE. Use ONLY your view_file tool to read files, always with absolute paths under $REPO. NEVER run a shell command and never use a terminal tool - you do not have permission to and the run will fail. If you want more context than the diff gives, view_file the specific source file by its absolute path. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only." > "$AGY_OUT" 2>&1
    Then read "$AGY_OUT" as JSON. The findings are in .response. If .denied_actions is non-empty, .response is empty, or .status is not "SUCCESS", that is a FAILED run — report failed: "agy denied <the denied actions>" or "agy returned an empty response", never findings: []. A denied run exits 0 and says SUCCESS, so the exit code proves nothing. If the output is not JSON (an older agy without --output-format), say so in failed:.
-   THREE THINGS ON THAT COMMAND LINE ARE LOAD-BEARING, and all fail silently if changed.
-   (0) --add-dir "$REPO": without it agy's file tools cannot read the source files, it tries a shell command instead, and headless mode denies it — a run with no review in it.
+   IF .denied_actions CONTAINS read_file/ViewFile, the machine is missing the one-line grant and NO prompt wording can fix it. Report failed: "agy lacks the read_file grant — add {\"permissions\": {\"allow\": [\"read_file($REPO)\"]}} to ~/.gemini/antigravity-cli/settings.json (path-scoped on purpose; never read_file(*))". Do NOT add it yourself: it grants standing read access to a tree and is the user's call.
+   IF .denied_actions CONTAINS command/RunCommand, the prompt let the model reach for shell. Report that verbatim; do not "fix" it with a command() grant.
+   FOUR THINGS ON THAT COMMAND LINE ARE LOAD-BEARING, and all fail silently if changed.
+   (0) --add-dir "$REPO": without it agy's file tools cannot read the source files at all. On 1.2.7 it is necessary and NOT sufficient — the read_file grant is the other half.
+   (c) THE SHELL PROHIBITION AND THE view_file NAMING: 1.2.7 retired list_dir/grep_search/find_by_name from the default agent, so an exploratory prompt makes the model fall back to a shell command, which headless denies. Measured: the same prompt inviting it to "open full source files in this workspace" was denied on command; forbidding shell and naming view_file with absolute paths returned a real review at denied_actions: null.
    (a) PROMPT WORDING: do not add "security issues", "vulnerabilities" or "security scanning" — that phrasing triggers a flat safety refusal from this model (observed 2026-07-28), and a refusal is indistinguishable from a clean review in the output.
    (b) NO PERMISSIONS FLAG: do not add --dangerously-skip-permissions. A sub-agent prompt carrying it is blocked by a classifier before the agent starts (observed 2026-08-11), which looks like a reviewer that never existed. The prompt only uses file tools, so the flag is not needed — verified by running without it.
    Keep the prompt to reading files. The moment it asks agy to run shell commands, mode 1 comes back and the flag is not the way out of it.
 3. If it times out or errors, retry ONCE with the prompt narrowed to the most important files in the diff, keeping the same neutral wording. If agy reports a TOOL DENIAL ("a tool required the \\"command\\" permission") or REFUSES ON POLICY GROUNDS, say so explicitly in failed: — those are reviewer failures, NOT zero findings, and reporting them as a clean bill of health is the worst available outcome. If the retry also fails, return findings: [] and failed: "<what happened>".
-4. Only rm the diff file and "$AGY_OUT" after agy has returned and you have read the output. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
+4. Only rm the diff file and "$AGY_OUT" after agy has returned and you have read the output. The diff file lives inside the repo, so REMOVING IT IS NOT OPTIONAL — leave it behind and it shows up as an untracked file in the very tree under review. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
 Translate agy's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields agy does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}. ${READ_ONLY}`
 
 // OpenRouter reviewers run via `opencode run` (verified 2026-07-03):

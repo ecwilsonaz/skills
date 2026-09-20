@@ -3,6 +3,13 @@
 Researched 2026-09-14 on this Mac. Versions: `agy` 1.2.3 (`~/.local/bin/agy`, a single
 181 MB arm64 Mach-O Go binary, no bundled JS, README or schema), `codex-cli` 0.153.4.
 
+> **SUPERSEDED IN PART, 2026-09-19 (agy 1.2.7).** Everything below was measured on **1.2.3**.
+> Point 3's "no permissions flag at all ... workspace reads go through" **no longer holds**: on
+> 1.2.7 a headless `view_file` inside the workspace is auto-denied until a path-scoped
+> `read_file(<repo>)` grant exists, and the retired discovery tools make an exploratory prompt
+> fall back to shell. Read **"Addendum, 2026-09-19"** at the end of this file before acting on
+> anything here.
+
 ## Answer in five lines
 
 1. **Not safe.** `agy --sandbox --dangerously-skip-permissions` is not a read-only review. The flag also auto-approves the agent's own request to leave the sandbox (`BypassSandbox: true`). A Google collaborator confirmed that is intended (issue #36). So the worst case is any command at your full user privileges, with network access.
@@ -205,3 +212,79 @@ Rationale:
 - https://github.com/google-antigravity/antigravity-cli/issues/36 · /issues/548 · /issues/627 · /issues/45
 - codex: `codex review --help`, `codex --help`, `codex exec --help`, `~/.codex/config.toml`; https://github.com/openai/codex at tag `rust-v0.153.4`: `codex-rs/cli/src/main.rs`, `codex-rs/exec/src/lib.rs`, `codex-rs/config/src/config_toml.rs`, `codex-rs/protocol/src/config_types.rs`, `codex-rs/protocol/src/protocol.rs`
 - Secondary: `~/.claude/skills/code-review-panel/SKILL.md` lines 385-448
+
+---
+
+## Addendum, 2026-09-19: agy 1.2.7 broke the read, and what fixes it
+
+Measured on **agy 1.2.7** (the body above was measured on 1.2.3). The PR #99 panel lost its
+Antigravity reviewer to a `read_file` / ViewFile denial **with the repo correctly passed as
+`--add-dir`**, which the 1.2.3 conclusion said could not happen. Ten probes, all headless,
+all `--sandbox --output-format json`.
+
+### What changed
+
+Two 1.2.7/1.2.6 changelog entries compound, and neither names permissions:
+
+- 1.2.7: *"retiring the legacy `find_by_name`, `grep_search`, and `list_dir` tools from the
+  default baseline while keeping them available to custom agents that explicitly list them in
+  `tools`"*.
+- 1.2.6: *"Fixed turns ... running across secondary workspaces executing without the CLI
+  session's active permission mode ... and non-workspace file access grants."*
+
+### The probes
+
+| # | Setup | Result |
+|---|---|---|
+| A | cwd = a bare `/private/tmp` dir, no `--add-dir`, "read notes.txt" | DENIED `command` / RunCommand — the model reached for shell because it had no `list_dir` |
+| B | same, prompt names `view_file` + absolute path, forbids shell | DENIED `read_file` / ViewFile |
+| C | cwd = the repo, under `/Users/eric` (a `trustedWorkspaces` entry), same prompt | DENIED `read_file` / ViewFile |
+| D | as C, plus `read_file(<repo>)` in `~/.gemini/antigravity-cli/settings.json` → `permissions.allow` | **SUCCESS**, `denied_actions: null`, real answer |
+| E | as D, asked to read `~/.agy-probe-outside.txt` and a `/private/tmp` file | DENIED `read_file`; **neither marker appeared in the response** |
+| F | as D, full review prompt saying "open full source files in this workspace for context when needed" | DENIED `command` / RunCommand |
+| G | as F, prompt forbids shell and names `view_file` with absolute paths | **SUCCESS**, `denied_actions: null`, 1,684-char review |
+
+### Conclusions
+
+1. **Workspace membership no longer grants reads.** Probe C is decisive: `--add-dir`, cwd set
+   to the repo, and a path under an existing `trustedWorkspaces` entry — still denied. The
+   2026-09-14 "just add `--add-dir`" finding held on 1.2.3 and is now necessary-not-sufficient.
+   `trustedWorkspaces` in `antigravity-cli/settings.json` did nothing for headless `read_file`.
+2. **A path-scoped `read_file` grant is the fix, and its scope genuinely holds.** Probe E is
+   the safety evidence: with `read_file(<repo>)` granted, reads of `$HOME` and `/private/tmp`
+   were denied and no marker leaked into the response. So `read_file(*)` is unnecessary as well
+   as unsafe — the diff under review is untrusted input, and `*` would put `~/.ssh`, `~/.aws`
+   and every `.env` within reach of an injection in it.
+3. **The retired discovery tools make an exploratory prompt reach for shell.** Probes A and F
+   both died on `command` with no discovery tools available. The prompt must forbid shell and
+   name `view_file` with absolute paths (probe G). **Do not answer this with a `command()`
+   grant** — that hands the command surface to a reviewer of untrusted input, which is exactly
+   what mode 3 above refuses.
+4. **The diff file must live inside the repo.** A `mktemp` path is a second workspace and falls
+   outside the single grant, so the reviewer cannot read the diff it was handed. This is the
+   same constraint the opencode wrapper already had, arrived at for a different reason.
+
+### Not built, and probably the better fix
+
+The 1.2.7 note says the retired tools **remain available to custom agents that list them in
+`tools`**. A read-only custom agent — `view_file`, `grep_search`, `list_dir`, `find_by_name`,
+no shell tool at all — would remove the shell fallback structurally rather than by asking the
+model nicely, and would make the prompt wording non-load-bearing. **No agents directory exists
+on this machine** (`~/.gemini/agents`, `~/.gemini/antigravity-cli/agents` and `~/.agy/agents`
+are all absent) and `agy agent` lists none, so the file format is unverified here. That is the
+next thing to try if the prompt-level prohibition proves flaky.
+
+### One caveat about the output, unrelated to permissions
+
+Probe G returned a well-formed review whose top finding was a confident **CRITICAL that is
+false** — it claimed `profileAisleTeaser` violates `ProfileFilmCard` and "will cause a strict
+TypeScript compilation failure", on a branch where `npm run build` exits 0. The permission fix
+restores the reviewer; it says nothing about its accuracy, and the panel's verify phase is
+still what stands between agy and the findings table.
+
+### The grant is the user's to add
+
+It gives a coding agent standing read access to a directory tree, so the wrapper detects its
+absence and reports the exact line rather than adding it. The probes above were run with the
+grant added temporarily and the file restored from a backup afterwards; this machine does NOT
+currently carry it.
