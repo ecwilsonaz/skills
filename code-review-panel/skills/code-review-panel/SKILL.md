@@ -87,19 +87,17 @@ comparison against its OWN sibling, and it was read for two months as a reason n
 look at Kimi again. A cost finding about one variant says nothing about the next
 generation; re-measure rather than inherit it.
 
-**OpenAI models (Sol, GPT-5.x): do NOT route through OpenRouter.** The codex CLI in the
+**OpenAI models (Sol, GPT-6.x): do NOT route through OpenRouter.** The codex CLI in the
 core panel is already authenticated against OpenAI directly — an extra OpenAI-model
 reviewer runs as a second standalone codex run with a model override:
-`codex review <scope-flag> -c model="gpt-5.6-sol"` (same background + tail rules as the
+`codex review <scope-flag> -c model="gpt-6.1-sol" -c model_reasoning_effort="high"` (same background + tail rules as the
 core standalone codex run). OpenRouter adds a shared-quota/provider-policy
 failure surface for no benefit (observed 2026-07-12: `openai/gpt-5.6-sol` via OpenRouter
 died on an upstream quota 502 while the codex CLI path was available the whole time).
-Version gate: gpt-5.6-sol rejects older CLIs — v0.133 returns 400 "requires a newer
-version of Codex"; upgrade via `npm install -g @openai/codex@latest` (it is an npm
-global on this machine, not brew) before launching the panel, not mid-run. (As of
-2026-07-18 this machine runs codex-cli v0.144.1; a direct `codex review` used model
-gpt-5.5 and prints its findings under a "Review comment:" header — see the marker note
-in "The standalone codex run".)
+Check the installed Codex CLI version before launch and report a model/version failure
+as a failed seat. Upgrade only before a new panel run, not mid-run. The final findings
+appear after a `Review comment:` or `Full review comments:` header; see the standalone
+run instructions.
 
 ## Phase 0: Determine Review Scope (main conversation, do this ONCE)
 
@@ -175,16 +173,14 @@ findings enter the workflow as data (`codexFindings`).
 Launch (background Bash, `run_in_background: true`, output redirected to a log):
 
 ```bash
-codex review <codex scope flag> -c model="gpt-5.6-sol" -c model_reasoning_effort="high" \
+codex review <codex scope flag> -c model="gpt-6.1-sol" -c model_reasoning_effort="high" \
   > <scratchpad>/codex-review-<scope-label>.log 2>&1
 ```
 
-- **Model and effort are pinned explicitly** so a drifted `~/.codex/config.toml` cannot
-  silently downgrade the reviewer. gpt-5.6-sol at high effort is the best verified
-  configuration (confirmed running 2026-08-13 on codex-cli v0.147.0). When a newer
-  model ships, update the flag here after one verified run. Version gate: gpt-5.6-sol
-  rejects CLIs older than ~v0.134 with a 400; upgrade via
-  `npm install -g @openai/codex@latest` before launching, not mid-run.
+- **Model and effort are pinned explicitly** to `gpt-6.1-sol` at high reasoning so a
+  drifted `~/.codex/config.toml` cannot silently change the reviewer. If the
+  installed CLI cannot run that model, report a failed seat; do not silently
+  fall back to another model or change versions during a panel.
 - Exactly one scope flag (`--base <sha>`, `--uncommitted`, `--commit <sha>`). Older
   CLIs rejected a prompt argument beside a scope flag; v0.147.0's help documents an
   optional `[PROMPT]` for custom review instructions, but that combination is
@@ -486,7 +482,7 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 //     "security scanning" or "exploit" into this prompt.
 const AGY_WRAPPER = `You are a wrapper around the Antigravity CLI (agy), producing an external (Gemini) code-review perspective.
 Steps:
-1. Set REPO to the repository the diff command reads: the path after "git -C" if the diff command has one, else "$(git rev-parse --show-toplevel)". Write the diff to a file INSIDE that repo — mkdir -p "$REPO/.claude/reviews" then DIFF_FILE="$REPO/.claude/reviews/.agy-panel-diff-$$.tmp" — with: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes). INSIDE the repo is load-bearing: a mktemp path is a SECOND workspace and falls outside the single read_file grant, so the diff itself becomes unreadable.
+1. Set REPO to the repository the diff command reads: the path after "git -C" if the diff command has one, else "$(git rev-parse --show-toplevel)". Write the diff to a file INSIDE that repo — mkdir -p "$REPO/.claude/reviews" then DIFF_FILE="$REPO/.claude/reviews/.agy-panel-diff-$$.tmp" — with: ${CFG.diffCommand} ${CFG.diffCommand.includes(' -- ') ? '' : '-- '}':(exclude)*package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes). Run that exact command: never add "-- ." or any other positive pathspec, which widens a diff command already scoped to paths to the whole repository. INSIDE the repo is load-bearing: a mktemp path is a SECOND workspace and falls outside the single read_file grant, so the diff itself becomes unreadable.
 2. Set AGY_OUT="$(mktemp -t agy_panel_out.XXXXXX)" (the OUTPUT may live outside the repo; agy writes it, agy never reads it). Run with a hard 9-minute bound, from "$REPO": timeout 540 agy --sandbox --add-dir "$REPO" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --output-format json --prompt "Review the code changes in the diff file at $DIFF_FILE. Use ONLY your view_file tool to read files, always with absolute paths under $REPO. NEVER run a shell command and never use a terminal tool - you do not have permission to and the run will fail. If you want more context than the diff gives, view_file the specific source file by its absolute path. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only." > "$AGY_OUT" 2>&1
    Then read "$AGY_OUT" as JSON. The findings are in .response. If .denied_actions is non-empty, .response is empty, or .status is not "SUCCESS", that is a FAILED run — report failed: "agy denied <the denied actions>" or "agy returned an empty response", never findings: []. A denied run exits 0 and says SUCCESS, so the exit code proves nothing. If the output is not JSON (an older agy without --output-format), say so in failed:.
    IF .denied_actions CONTAINS read_file/ViewFile, the machine is missing the one-line grant and NO prompt wording can fix it. Report failed: "agy lacks the read_file grant — add {\"permissions\": {\"allow\": [\"read_file($REPO)\"]}} to ~/.gemini/antigravity-cli/settings.json (path-scoped on purpose; never read_file(*))". Do NOT add it yourself: it grants standing read access to a tree and is the user's call.
@@ -526,7 +522,7 @@ Translate agy's prose findings into the structured schema faithfully — do not 
 // each covered, so partial coverage is never mistaken for a clean pass.
 const orWrapper = (m) => `You are a wrapper around the opencode CLI, producing an external code-review perspective from the ${m.model} model via OpenRouter.
 Steps:
-1. mkdir -p .claude/reviews then DIFF_FILE=".claude/reviews/.panel-diff-${m.id}-$$.tmp". FIRST measure the diff: ${CFG.diffCommand} -- . ':(exclude)package-lock.json' ':(exclude)*.lock' | wc -l.
+1. mkdir -p .claude/reviews then DIFF_FILE=".claude/reviews/.panel-diff-${m.id}-$$.tmp". FIRST measure the diff: ${CFG.diffCommand} ${CFG.diffCommand.includes(' -- ') ? '' : '-- '}':(exclude)*package-lock.json' ':(exclude)*.lock' | wc -l. Use that exact command for the diff you write too, and never add "-- ." or any other positive pathspec: it widens a diff command already scoped to paths to the whole repository. (A slice below puts its own pathspecs after the excludes; when the diff command is already scoped, pathspecs are a UNION, so take the slice from within that scope and replace the command's own paths with the slice's rather than appending to them.)
    - Under ~6,000 lines: write the whole diff.
    - OVER ~6,000 lines: write only YOUR SLICE. Slice by top-level path so the slices are disjoint and each is coherent — list the changed directories with --stat, order them, and take the slice whose index is ${m.sliceIndex ?? 0} of ${m.sliceCount ?? 1} by passing those pathspecs to the diff command. A thorough review of one slice beats a timeout on the whole diff, and this reviewer has failed the whole-diff way twice.
    Write a header followed by the diff into it: the lines "=== Project context ===", ${JSON.stringify(CFG.context)}, "=== Change intent ===", ${JSON.stringify(CFG.intent)}, "=== Scope of THIS review ===" plus a one-line statement of which slice you took (or "the entire diff"), "=== Diff ===", then append the diff. The file must stay inside the repo — opencode's plan agent cannot read outside the workspace.
@@ -725,18 +721,20 @@ before committing:
    is wrong. Never calibrate a threshold from the finding's own examples; they are the
    sample the reviewer happened to hit, and the counter-population is what the sweep is
    for.
-2. **codex on the uncommitted diff** (`codex review --uncommitted`, same background +
-   tail rules as the standalone run). Cheap, already authenticated, and it covers the
-   class a data sweep cannot see: lock lifetimes, interleavings, error-path ordering.
-3. **One skeptic subagent** (pinned model, never the orchestrator's) prompted to REFUTE
-   the fix: enumerate the truth table of every new/changed predicate and hunt the empty
+2. **Codex on the isolated fix diff.** Use `codex review --uncommitted -c model="gpt-6.1-sol" -c model_reasoning_effort="high"` when the fix batch is the entire uncommitted diff; otherwise give Codex the exact fix commit or a dedicated worktree. Use the same background and tail rules as the standalone run. This covers lock lifetimes, interleavings, and error-path ordering that a data sweep cannot see.
+3. **One skeptic subagent pinned to Claude Opus 5.5** (`claude-opus-5-5`, high effort), never the orchestrator's default, prompted to REFUTE the fix: enumerate the truth table of every new/changed predicate and hunt the empty
    cell — the case nobody named. (The three fix regressions above all lived in an
    unconsidered cell: a sub-floor tie, an equal year distance, a lock released after
    its directory was deleted.)
 
 Findings from the gate are fix iterations inside the SAME round — fix, re-run the gate,
-then commit. Skip the gate only for mechanical fixes (doc wording, dead-code deletion,
-test-only changes); anything touching decision logic, money paths, or locks gets it.
+then commit. **Run both reviewer seats after every panel fix batch**, including docs,
+CSS, tests, dead-code deletion, and apparently mechanical fixes. Do not call a failed,
+truncated, or unavailable seat a clean pass. Freeze the exact fix diff before both seats
+start; if the fix changes while either reads it, invalidate both results and rerun the
+gate on the new diff. The A/B sweep applies when a decision function changed and a real
+input population is available.
+
 Two authoring rules that need no tooling: enumerate the truth table of any new boolean
 predicate before writing it, and any test fixture claiming to mirror real data must be
 QUERIED from that data at authoring time, never typed from memory.

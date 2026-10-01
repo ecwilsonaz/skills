@@ -37,7 +37,7 @@ With a manual install the skill is invoked as plain `/code-review-panel`.
 The Claude-model reviewers work out of the box. The external panel seats need their
 own tooling, and the skill degrades gracefully when one is missing:
 
-- **Codex** — OpenAI's CLI (`codex`), run via `npx codex@latest` or a local install;
+- **Codex** — OpenAI's CLI (`codex`), pinned to `gpt-6.1-sol` at high reasoning;
   requires OpenAI authentication.
 - **Antigravity** — Google's agentic IDE CLI; requires its own setup.
 - **OpenRouter models** (on request) — set `OPENROUTER_API_KEY`. Note that requests go
@@ -58,15 +58,16 @@ verification gate**:
   outcome classified as an intended improvement with evidence or as a defect. A threshold
   is never calibrated from the finding's own examples; those are the cases one reviewer
   happened to hit, and the counter-population is the point of the sweep;
-- **codex over the uncommitted diff**, which covers what a data sweep structurally cannot
+- **Codex over the isolated fix diff**, which covers what a data sweep structurally cannot
   see — lock lifetimes, interleavings, error-path ordering;
-- **one skeptic subagent** whose brief is to refute the fix by enumerating the truth table
+- **one Claude Opus 5.5 skeptic subagent** whose brief is to refute the fix by enumerating the truth table
   of every changed predicate and hunting the empty cell. The fix regressions that motivated
   this all lived in a cell nobody had named.
 
 Gate findings are iterations inside the same round: fix, re-run the gate, then commit.
-Mechanical changes — doc wording, dead code, test-only edits — skip it; anything touching
-decision logic, money paths or locks does not.
+The two reviewer seats run after **every** panel fix, including doc wording, CSS, dead code,
+and test-only edits. The A/B sweep applies when a decision function changed and real
+input data is available. A failed reviewer leaves the gate incomplete.
 
 Two rules exist because a whole campaign's churn traced to skipping them. **A fix that adds
 a threshold, ratio, classifier or diagnosis branch is a design question wearing a bug's
