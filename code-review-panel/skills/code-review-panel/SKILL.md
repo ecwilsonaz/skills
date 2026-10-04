@@ -344,6 +344,44 @@ const FINDINGS_SCHEMA = {
   },
 }
 
+// THE AGY SEAT REPORTS FACTS, AND THE SCRIPT DECIDES. Its wrapper prompt already said "a
+// denied run or an empty .response is FAILED, never findings: []", and on 2026-10-03 the
+// wrapper read exactly that output twice (status SUCCESS, response "", denied_actions
+// RunCommand) and returned findings: [] with no failed: — the panel counted a reviewer that
+// never reviewed. A judgement the model can skip is not a guard, so the wrapper now copies each
+// run's three raw fields into agyRuns and the collection loop applies the rule itself.
+const AGY_SCHEMA = {
+  ...FINDINGS_SCHEMA,
+  required: ['findings', 'agyRuns'],
+  properties: {
+    ...FINDINGS_SCHEMA.properties,
+    agyRuns: {
+      type: 'array',
+      description: 'one entry per agy invocation, in order, copied verbatim from its JSON output',
+      items: {
+        type: 'object',
+        required: ['status', 'responseChars', 'deniedActions'],
+        properties: {
+          status: { type: 'string', description: '.status exactly as printed, or "NOT_JSON" if the output did not parse' },
+          responseChars: { type: 'number', description: 'length of .response in characters (0 if empty or absent)' },
+          deniedActions: { type: 'array', items: { type: 'string' }, description: 'each .denied_actions[].action; [] only when the field is null or empty' },
+        },
+      },
+    },
+  },
+}
+
+/** Why the agy seat failed, read from the last run's raw facts; null when that run is usable. */
+function agyFailure(out) {
+  const runs = Array.isArray(out.agyRuns) ? out.agyRuns : []
+  if (runs.length === 0) return 'wrapper reported no agy run (agyRuns empty)'
+  const last = runs[runs.length - 1]
+  if (last.deniedActions?.length) return `agy denied ${last.deniedActions.join(', ')}`
+  if (last.status !== 'SUCCESS') return `agy status ${last.status}`
+  if (!(last.responseChars > 0)) return 'agy returned an empty response'
+  return null
+}
+
 const MERGE_SCHEMA = {
   type: 'object',
   required: ['issues'],
@@ -494,6 +532,7 @@ Steps:
    (b) NO PERMISSIONS FLAG: do not add --dangerously-skip-permissions. A sub-agent prompt carrying it is blocked by a classifier before the agent starts (observed 2026-08-11), which looks like a reviewer that never existed. The prompt only uses file tools, so the flag is not needed — verified by running without it.
    Keep the prompt to reading files. The moment it asks agy to run shell commands, mode 1 comes back and the flag is not the way out of it.
 3. If it times out or errors, retry ONCE with the prompt narrowed to the most important files in the diff, keeping the same neutral wording. If agy reports a TOOL DENIAL ("a tool required the \\"command\\" permission") or REFUSES ON POLICY GROUNDS, say so explicitly in failed: — those are reviewer failures, NOT zero findings, and reporting them as a clean bill of health is the worst available outcome. If the retry also fails, return findings: [] and failed: "<what happened>".
+3b. FOR EVERY agy RUN (the retry included), append one entry to agyRuns with .status, the length of .response and the .action of each .denied_actions entry, copied exactly. The script reads the LAST entry and marks this seat failed itself if it was denied, not SUCCESS or empty — so never omit a run and never tidy the values.
 4. Only rm the diff file and "$AGY_OUT" after agy has returned and you have read the output. The diff file lives inside the repo, so REMOVING IT IS NOT OPTIONAL — leave it behind and it shows up as an untracked file in the very tree under review. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
 Translate agy's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields agy does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}. ${READ_ONLY}`
 
@@ -554,7 +593,7 @@ const REVIEWERS = [
     opts: { model: 'opus', label: 'opus-deep' },
     prompt: `You are a senior reviewer doing a deep architectural pass. Focus on subtle logic bugs, race conditions, fail-open vs fail-closed behavior, edge cases in parsing/config handling, drift hazards between code and its contracts, and issues other reviewers might miss. ${COMMON}`,
   },
-  { id: 'antigravity', opts: { model: 'sonnet', label: 'antigravity-gemini' }, prompt: AGY_WRAPPER },
+  { id: 'antigravity', opts: { model: 'sonnet', label: 'antigravity-gemini' }, prompt: AGY_WRAPPER, schema: AGY_SCHEMA },
   // Each OpenRouter reviewer is handed its slice index. With N of them the diff is cut
   // into N disjoint slices when it is large (see orWrapper step 1), so the panel covers
   // the whole change set across the group rather than having every model time out trying
@@ -569,7 +608,7 @@ const REVIEWERS = [
 
 // Barrier is correct here: dedup/consensus genuinely needs ALL reviewers' findings.
 const raw = await parallel(REVIEWERS.map((r) => () =>
-  agent(r.prompt, { ...r.opts, phase: 'Review', schema: FINDINGS_SCHEMA })
+  agent(r.prompt, { ...r.opts, phase: 'Review', schema: r.schema ?? FINDINGS_SCHEMA })
     .then((out) => ({ id: r.id, out }))
 ))
 
@@ -591,6 +630,11 @@ for (let i = 0; i < REVIEWERS.length; i++) {
         ? 'agent returned no result (blocked by a classifier, or a terminal error)'
         : res.out.failed
     reviewerStatus[REVIEWERS[i].id] = `FAILED: ${why}`
+    continue
+  }
+  const agyWhy = REVIEWERS[i].id === 'antigravity' ? agyFailure(res.out) : null
+  if (agyWhy) {
+    reviewerStatus[REVIEWERS[i].id] = `FAILED: ${agyWhy} (wrapper returned ${res.out.findings.length} findings; discarded)`
     continue
   }
   reviewerStatus[res.id] = `ok (${res.out.findings.length} findings)`
