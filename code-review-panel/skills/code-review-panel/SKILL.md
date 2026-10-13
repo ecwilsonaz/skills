@@ -269,7 +269,7 @@ Before/while it runs:
     in parallel with the workflow rather than after it, since agy takes minutes and the
     other reviewers are already running. Write the diff to a file outside the repo, then
     from the repo root run
-    `timeout 540 agy --sandbox --add-dir "$REPO" --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --output-format json --prompt "…"`
+    `timeout 540 agy --sandbox --add-dir "$REPO" --add-dir "$(dirname "$DIFF_FILE")" --model "Gemini 3.8 Flash (High)" --print-timeout 8m --output-format json --prompt "…"`
     with the same neutral wording the wrapper uses, and apply the same `denied_actions` /
     empty-response check (a denied run exits 0). Never add `--dangerously-skip-permissions`
     here either: see mode 3 — it is unsafe even run by hand.
@@ -350,6 +350,13 @@ const FINDINGS_SCHEMA = {
 // RunCommand) and returned findings: [] with no failed: — the panel counted a reviewer that
 // never reviewed. A judgement the model can skip is not a guard, so the wrapper now copies each
 // run's three raw fields into agyRuns and the collection loop applies the rule itself.
+//
+// AND IT HANDS OVER THE TEXT, because translating is a judgement too. On 2026-10-13 (PR #320)
+// agy's retry returned 4,133 characters naming a CRITICAL and a HIGH, both real; the wrapper
+// returned findings: [] and a rounded responseChars of 4000, and the seat read "ok (0
+// findings)". The run was usable and the wrapper dropped it. responseText lets the script see
+// what agy said, so a response that names severities beside an empty findings list fails the
+// seat instead of passing as a clean review.
 const AGY_SCHEMA = {
   ...FINDINGS_SCHEMA,
   required: ['findings', 'agyRuns'],
@@ -360,10 +367,11 @@ const AGY_SCHEMA = {
       description: 'one entry per agy invocation, in order, copied verbatim from its JSON output',
       items: {
         type: 'object',
-        required: ['status', 'responseChars', 'deniedActions'],
+        required: ['status', 'responseChars', 'deniedActions', 'responseText'],
         properties: {
           status: { type: 'string', description: '.status exactly as printed, or "NOT_JSON" if the output did not parse' },
-          responseChars: { type: 'number', description: 'length of .response in characters (0 if empty or absent)' },
+          responseChars: { type: 'number', description: 'length of .response in characters (0 if empty or absent), MEASURED with jq \'.response | length\', never estimated or rounded' },
+          responseText: { type: 'string', description: '.response verbatim, first 20000 characters; "" when empty or absent' },
           deniedActions: { type: 'array', items: { type: 'string' }, description: 'each .denied_actions[].action; [] only when the field is null or empty' },
         },
       },
@@ -379,6 +387,11 @@ function agyFailure(out) {
   if (last.deniedActions?.length) return `agy denied ${last.deniedActions.join(', ')}`
   if (last.status !== 'SUCCESS') return `agy status ${last.status}`
   if (!(last.responseChars > 0)) return 'agy returned an empty response'
+  const findings = Array.isArray(out.findings) ? out.findings.length : 0
+  const named = (String(last.responseText ?? '').match(/\b(CRITICAL|HIGH|MEDIUM|LOW)\b/g) ?? []).length
+  if (findings === 0 && named > 0) {
+    return `wrapper returned 0 findings but agy's response names a severity ${named} time(s); fold agyRuns[-1].responseText in from the journal by hand`
+  }
   return null
 }
 
@@ -521,7 +534,7 @@ Anchor rule: a finding must matter for this change or be a real defect with a co
 const AGY_WRAPPER = `You are a wrapper around the Antigravity CLI (agy), producing an external (Gemini) code-review perspective.
 Steps:
 1. Set REPO to the repository the diff command reads: the path after "git -C" if the diff command has one, else "$(git rev-parse --show-toplevel)". Write the diff to a file INSIDE that repo — mkdir -p "$REPO/.claude/reviews" then DIFF_FILE="$REPO/.claude/reviews/.agy-panel-diff-$$.tmp" — with: ${CFG.diffCommand} ${CFG.diffCommand.includes(' -- ') ? '' : '-- '}':(exclude)*package-lock.json' ':(exclude)*.lock' > "$DIFF_FILE" (if the exclude pathspec form fails for this diff command, use it without the excludes). Run that exact command: never add "-- ." or any other positive pathspec, which widens a diff command already scoped to paths to the whole repository. INSIDE the repo is load-bearing: a mktemp path is a SECOND workspace and falls outside the single read_file grant, so the diff itself becomes unreadable.
-2. Set AGY_OUT="$(mktemp -t agy_panel_out.XXXXXX)" (the OUTPUT may live outside the repo; agy writes it, agy never reads it). Run with a hard 9-minute bound, from "$REPO": timeout 540 agy --sandbox --add-dir "$REPO" --model "Gemini 3.1 Pro (High)" --print-timeout 8m --output-format json --prompt "Review the code changes in the diff file at $DIFF_FILE. Use ONLY your view_file tool to read files, always with absolute paths under $REPO. NEVER run a shell command and never use a terminal tool - you do not have permission to and the run will fail. If you want more context than the diff gives, view_file the specific source file by its absolute path. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only." > "$AGY_OUT" 2>&1
+2. Set AGY_OUT="$(mktemp -t agy_panel_out.XXXXXX)" (the OUTPUT may live outside the repo; agy writes it, agy never reads it). Run with a hard 9-minute bound, from "$REPO": timeout 540 agy --sandbox --add-dir "$REPO" --model "Gemini 3.8 Flash (High)" --print-timeout 8m --output-format json --prompt "Review the code changes in the diff file at $DIFF_FILE. Use ONLY your view_file tool to read files, always with absolute paths under $REPO. NEVER run a shell command and never use a terminal tool - you do not have permission to and the run will fail. If you want more context than the diff gives, view_file the specific source file by its absolute path. Look for bugs, logic errors, incorrect error handling, data integrity problems, race conditions, and code quality issues. For each finding provide: severity (CRITICAL/HIGH/MEDIUM/LOW), file path, line numbers, description, recommended fix. Be concise - findings list only." > "$AGY_OUT" 2>&1
    Then read "$AGY_OUT" as JSON. The findings are in .response. If .denied_actions is non-empty, .response is empty, or .status is not "SUCCESS", that is a FAILED run — report failed: "agy denied <the denied actions>" or "agy returned an empty response", never findings: []. A denied run exits 0 and says SUCCESS, so the exit code proves nothing. If the output is not JSON (an older agy without --output-format), say so in failed:.
    IF .denied_actions CONTAINS read_file/ViewFile, the machine is missing the one-line grant and NO prompt wording can fix it. Report failed: "agy lacks the read_file grant — add {\"permissions\": {\"allow\": [\"read_file($REPO)\"]}} to ~/.gemini/antigravity-cli/settings.json (path-scoped on purpose; never read_file(*))". Do NOT add it yourself: it grants standing read access to a tree and is the user's call.
    IF .denied_actions CONTAINS command/RunCommand, the prompt let the model reach for shell. Report that verbatim; do not "fix" it with a command() grant.
@@ -532,7 +545,8 @@ Steps:
    (b) NO PERMISSIONS FLAG: do not add --dangerously-skip-permissions. A sub-agent prompt carrying it is blocked by a classifier before the agent starts (observed 2026-08-11), which looks like a reviewer that never existed. The prompt only uses file tools, so the flag is not needed — verified by running without it.
    Keep the prompt to reading files. The moment it asks agy to run shell commands, mode 1 comes back and the flag is not the way out of it.
 3. If it times out or errors, retry ONCE with the prompt narrowed to the most important files in the diff, keeping the same neutral wording. If agy reports a TOOL DENIAL ("a tool required the \\"command\\" permission") or REFUSES ON POLICY GROUNDS, say so explicitly in failed: — those are reviewer failures, NOT zero findings, and reporting them as a clean bill of health is the worst available outcome. If the retry also fails, return findings: [] and failed: "<what happened>".
-3b. FOR EVERY agy RUN (the retry included), append one entry to agyRuns with .status, the length of .response and the .action of each .denied_actions entry, copied exactly. The script reads the LAST entry and marks this seat failed itself if it was denied, not SUCCESS or empty — so never omit a run and never tidy the values.
+3b. FOR EVERY agy RUN (the retry included), append one entry to agyRuns with .status, the length of .response MEASURED with jq '.response | length' (never estimated or rounded), .response itself verbatim as responseText (first 20000 characters), and the .action of each .denied_actions entry, copied exactly. The script reads the LAST entry and marks this seat failed itself if it was denied, not SUCCESS, empty, or names severities while your findings list is empty — so never omit a run and never tidy the values.
+3c. A USABLE RUN'S FINDINGS ARE NOT YOURS TO DROP. If the last run's .response lists findings, every one goes into findings, even when an earlier run failed and even when you doubt it. Do not re-review the code yourself to decide which to keep.
 4. Only rm the diff file and "$AGY_OUT" after agy has returned and you have read the output. The diff file lives inside the repo, so REMOVING IT IS NOT OPTIONAL — leave it behind and it shows up as an untracked file in the very tree under review. (For a huge full-codebase scope where the diff is unwieldy, you may instead omit the diff file and tell agy to review the workspace source directly — it runs in the repo as its workspace.)
 Translate agy's prose findings into the structured schema faithfully — do not add findings of your own. For the scope and why_it_matters fields agy does not provide, classify yourself by checking each finding against the diff (does it anchor to changed lines?) and this intent: ${CFG.intent}. ${READ_ONLY}`
 
