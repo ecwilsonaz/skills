@@ -8,6 +8,80 @@ classes; the verification pass kills plausible-but-wrong findings before you see
 
 For non-code questions, see its sibling skill [`panel`](../panel/).
 
+## How it works
+
+```mermaid
+flowchart TD
+    start(["You run /code-review-panel"])
+
+    scope["Pick scope<br/>branch, uncommitted, commit, or repo"]
+
+    subgraph P1["Review: reviewers run in parallel, then findings are checked&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"]
+        cr["Claude<br/>code-reviewer"]
+        son["Claude Sonnet<br/>broad pass"]
+        opus["Claude Opus<br/>deep pass"]
+        agy["Antigravity<br/>(Gemini)"]
+        orm["OpenRouter models<br/>(optional)"]
+        codex["Codex<br/>(runs outside the workflow)"]
+        merge["Merge and dedupe findings"]
+        multi{"Found by 2+<br/>reviewers?"}
+        verify["Skeptic tries<br/>to refute it"]
+        rank["Ranked findings"]
+    end
+
+    subgraph P2["Triage: you choose, Claude fixes&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"]
+        triage{{"You decide each finding"}}
+        fix["Fix it"]
+        gate["Fix gate: Codex + skeptic<br/>re-review the fix"]
+        commit["Commit"]
+        history[("Disposition history<br/>(read by the next run)")]
+    end
+
+    converged{"HIGH or CRITICAL<br/>this round?"}
+    verdict(["Tests + lint, then verdict:<br/>APPROVE or REQUEST CHANGES"])
+
+    start --> scope
+    scope --> cr & son & opus & agy & orm & codex
+    cr & son & opus & agy & orm & codex --> merge
+    merge --> multi
+    multi -- "yes" --> rank
+    multi -- no --> verify --> rank
+    rank --> triage
+    triage -- fix --> fix --> gate
+    gate -- "new issue" --> fix
+    gate -- clean --> commit --> history
+    triage -- "defer / skip" --> history
+    history --> converged
+    converged -- "yes: run another round" --> scope
+    converged -- "no: converged" --> verdict
+
+    classDef you fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#1c1917
+    classDef main fill:#bfdbfe,stroke:#1d4ed8,stroke-width:2px,color:#0f172a
+    classDef claude fill:#ddd6fe,stroke:#6d28d9,stroke-width:2px,color:#1e1b4b
+    classDef ext fill:#a7f3d0,stroke:#047857,stroke-width:2px,color:#022c22
+    classDef extopt fill:#a7f3d0,stroke:#047857,stroke-width:2px,stroke-dasharray:5 3,color:#022c22
+    classDef store fill:#e5e7eb,stroke:#4b5563,stroke-width:2px,color:#111827
+
+    class start,triage you
+    class scope,fix,commit,verdict main
+    class cr,son,opus,merge,multi,verify,rank,gate claude
+    class converged main
+    class agy,codex ext
+    class orm extopt
+    class history store
+
+    style P1 fill:none,stroke:#8b949e,stroke-dasharray:4 4
+    style P2 fill:none,stroke:#8b949e,stroke-dasharray:4 4
+```
+
+Yellow = you · Blue = main conversation · Purple = Claude agents · Green = external CLIs (dashed = optional)
+
+Reviewers run in parallel inside a Workflow. Codex is the slowest seat, so it runs in the
+background from the main conversation, and its findings join the rest at the merge. A
+finding only one reviewer reported goes to a skeptic agent that tries to refute it. You
+then decide each finding, and every fix passes a verification gate before it is committed. Rounds
+repeat until a full panel round returns no HIGH or CRITICAL findings.
+
 ## Install
 
 This plugin is distributed via the `eric-skills` marketplace at the root of this repo:
